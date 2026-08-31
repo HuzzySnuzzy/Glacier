@@ -510,17 +510,27 @@ end
 -- DISPATCH
 --=====================================================================
 
+-- Forward-declared so makeCtx can hand it out as ctx.exec below.
+local execOne
+
 -- Every local Exec gets this ctx. reply is the load-bearing field: without it
 -- Config falls back to warn() and the command answers into the log.
+--
+-- ctx.exec is the second one: a command that runs other command LINES (an
+-- alias body, say) has to route each of them through the same local/remote
+-- split a typed line takes. Calling Config.Exec directly would resolve them in
+-- this VM only, so `alias arms "primary ak47"` would die as an unknown command
+-- instead of being forwarded to the server.
 local function makeCtx()
 	return {
 		player = plr,
 		source = "console",
 		reply = function(msg) addLog(msg, "reply") end,
+		exec = function(line) return execOne(line) end,
 	}
 end
 
-local function execOne(line)
+function execOne(line)
 	-- Broadcast lines are never resolved locally. The name may belong to a
 	-- server-only command that this VM has no entry for, and even when it is
 	-- a local cvar, the point of '!' is that the SERVER decides and pushes.

@@ -24,6 +24,20 @@
 -- Accessing a module that doesn't belong to this VM ERRORS, naming the module
 -- and the VM. Returning nil instead would surface as "attempt to index nil"
 -- somewhere downstream with nothing pointing back here.
+--
+-- On top of the modules, the verbs are grouped roughly as:
+--
+--   lifecycle   Spawn Respawn Move Unload Kill IsAlive GiveLoadout GiveWeapon
+--   health      HealthOf Damage Heal GiveArmor SetGod SetBuddha PuppetOf
+--   roster      PlayersWhere AlivePlayers PlayersOnTeam NearestPlayer
+--               PlayersInRadius Distance TeamOf SetTeam ResolveTeam
+--   world       LoadMap ClearMap CurrentMap SetTimescale SoundAt GetSpawnPoint
+--   weapons     WeaponClass WeaponStats WeaponNames
+--   console     Exec Get Set OnChange Command Alias Log Broadcast Tell
+--   events      On (see SIGNALS), ListSignals
+--
+-- Anything that reads or writes server state is server-only and says so when
+-- called from the wrong VM.
 
 local RunService        = game:GetService("RunService")
 local Players           = game:GetService("Players")
@@ -36,7 +50,7 @@ local Glacier = {}
 
 Glacier.IsServer = IS_SERVER
 Glacier.IsClient = IS_CLIENT
-Glacier.Version  = "1.0.0"
+Glacier.Version  = "1.1.0"
 
 --=====================================================================
 -- PATH RESOLUTION
@@ -168,6 +182,8 @@ local MODULES = {
 	Inventory      = { vm = "both",   get = sharedModule("Inventory") },
 	WeaponRegistry = { vm = "both",   get = sharedModule("WeaponRegistry") },
 	AnimDefs       = { vm = "both",   get = sharedModule("AnimDefs") },
+	Recoil         = { vm = "both",   get = sharedModule("Recoil") },
+	SoundKeys      = { vm = "both",   get = sharedModule("SoundKeys") },
 
 	-- client
 	State        = { vm = "client", get = clientModule("State") },
@@ -262,6 +278,23 @@ function Glacier.ListNames()
 	return table.concat(out, ", ")
 end
 
+-- Drop what's cached so the next access resolves again. Two uses:
+--
+--   Studio live-editing. Edit a module and every consumer that went through
+--   here is still holding the OLD table; nothing else invalidates it.
+--
+--   A folder that moved. resolve() never caches a nil, but findClientFolder
+--   and findServerFolder DO cache the folder they found, and a re-parent
+--   leaves them pointing at an orphan.
+function Glacier.Flush(name)
+	if name then
+		cache[name] = nil
+		return
+	end
+	table.clear(cache)
+	clientFolder, serverFolder = nil, nil
+end
+
 --=====================================================================
 -- CONVENIENCE VERBS
 --=====================================================================
@@ -270,6 +303,16 @@ end
 -- it, and it's shared with no VM-specific behaviour at require time.
 local function cfg()
 	return resolve("Config")
+end
+
+-- Declared here rather than down with the server verbs it mostly guards: a
+-- local is only in scope for what follows it, so a function defined ABOVE the
+-- declaration would call a nil global instead. Broadcast and Tell are the
+-- first two that need it.
+local function requireServer(what)
+	if not IS_SERVER then
+		error(("[Glacier] %s is server-only."):format(what), 3)
+	end
 end
 
 -- Routes output to the right place per VM. The recurring footgun in this
@@ -290,6 +333,40 @@ function Glacier.Log(message, isError)
 		end
 	end
 	if isError then warn(message) else print(message) end
+end
+
+-- Server -> every console in the game. Distinct from Log, which answers
+-- whoever is listening on THIS VM: an announcement has no single recipient.
+function Glacier.Broadcast(message)
+	requireServer("Broadcast")
+	local log = ReplicatedStorage:FindFirstChild("ConsoleLog")
+	if not log then return false, "ConsoleLog remote missing" end
+	log:FireAllClients(tostring(message), false)
+	return true
+end
+
+-- Server -> one player's console. What a command handler wants when it has a
+-- player but no ctx (a lifecycle hook, a timer), since ctx.reply is the only
+-- other route back and it only exists for the line that was typed.
+function Glacier.Tell(plr, message, isError)
+	requireServer("Tell")
+	if typeof(plr) ~= "Instance" or not plr:IsA("Player") then
+		return false, "Tell needs a Player"
+	end
+	local log = ReplicatedStorage:FindFirstChild("ConsoleLog")
+	if not log then return false, "ConsoleLog remote missing" end
+	log:FireClient(plr, tostring(message), isError or false)
+	return true
+end
+
+-- Console plumbing, forwarded so a script that already has Glacier doesn't
+-- have to require Config as well just to register one command or alias.
+function Glacier.Alias(name, target, opts)
+	return cfg().Alias(name, target, opts)
+end
+
+function Glacier.RemoveCommand(name)
+	return cfg().RemoveCommand(name)
 end
 
 -- Run a console line with a ctx that has a working reply. Calling Config.Exec
@@ -322,12 +399,6 @@ end
 --------------------------------------------------------------
 -- server verbs
 --------------------------------------------------------------
-
-local function requireServer(what)
-	if not IS_SERVER then
-		error(("[Glacier] %s is server-only."):format(what), 3)
-	end
-end
 
 -- Awaited, not resolved: Registry.Lifecycle is published at the end of
 -- PlayerLifecycleServer, and a caller at server start would otherwise race it.
@@ -427,6 +498,81 @@ function Glacier.PositionOf(entity, kind)
 end
 
 --------------------------------------------------------------
+-- health & damage  (server)
+--------------------------------------------------------------
+
+-- Health writes to the PUPPET, never the RawBody. The RawBody is the collision
+-- hull the client predicts against and has no Humanoid at all, so attributes
+-- set on it are read by nothing -- the single most common way a hand-rolled
+-- damage call ends up silently doing nothing.
+function Glacier.PuppetOf(x)
+	local entity, kind = Glacier.Identify(x)
+	local body = Glacier.BodyOf(entity, kind)
+	if not body or not body.Parent then return nil end
+
+	local puppet = body:FindFirstChild("Puppet")
+	if puppet then return puppet end
+
+	-- A bot model is its own rig, but only counts if it can actually take
+	-- damage -- that is, if it has the Humanoid Health looks for.
+	if body:IsA("Model") and body:FindFirstChildOfClass("Humanoid") then return body end
+	return nil
+end
+
+-- Health itself is server-only, so each verb below gates BEFORE looking for a
+-- body. Gating inside the resolve instead would make the same client-side call
+-- error when the target is alive and quietly return "no body" when it isn't.
+local function health()
+	return resolve("Health")
+end
+
+-- { health, armor, helmet, dead }, or nil when there's no body right now.
+function Glacier.HealthOf(x)
+	requireServer("HealthOf")
+	local puppet = Glacier.PuppetOf(x)
+	return puppet and health().Get(puppet) or nil
+end
+
+-- opts is Health.Damage's: hitPart, attacker, stats, distance.
+-- Returns dealt, killed, hitgroup -- 0, false, nil for anything with no body.
+function Glacier.Damage(x, amount, opts)
+	requireServer("Damage")
+	local puppet = Glacier.PuppetOf(x)
+	if not puppet then return 0, false, nil end
+	return health().Damage(puppet, amount, opts)
+end
+
+function Glacier.Heal(x, amount)
+	requireServer("Heal")
+	local puppet = Glacier.PuppetOf(x)
+	if not puppet then return false end
+	health().Heal(puppet, amount or 0)
+	return true
+end
+
+function Glacier.GiveArmor(x, amount, helmet)
+	requireServer("GiveArmor")
+	local puppet = Glacier.PuppetOf(x)
+	if not puppet then return false end
+	health().GiveArmor(puppet, amount or 0, helmet)
+	return true
+end
+
+-- god swallows damage entirely; buddha lets it land but never lets it kill.
+-- Both are plain attributes on the puppet, so they die WITH the body: a player
+-- who respawns is mortal again unless something sets them back.
+local function setCheatFlag(x, attribute, on)
+	requireServer("SetGod / SetBuddha")
+	local puppet = Glacier.PuppetOf(x)
+	if not puppet then return false, "no body" end
+	puppet:SetAttribute(attribute, on and true or false)
+	return true
+end
+
+function Glacier.SetGod(x, on)    return setCheatFlag(x, "God", on) end
+function Glacier.SetBuddha(x, on) return setCheatFlag(x, "Buddha", on) end
+
+--------------------------------------------------------------
 -- world
 --------------------------------------------------------------
 
@@ -456,6 +602,222 @@ function Glacier.SoundAt(position, soundId)
 	if not r then return false, "SoundReceiver remote missing" end
 	r:FireAllClients(position, soundId)
 	return true
+end
+
+--------------------------------------------------------------
+-- map
+--------------------------------------------------------------
+
+-- Returns model | nil, name | nil. The MODEL is server-only -- GetMap is a
+-- BindableFunction and its OnInvoke lives in the server VM -- but mp_map is
+-- REPLICATED, so the NAME is answerable from either side and a client asking
+-- "what map is this" gets a real answer rather than an error.
+function Glacier.CurrentMap()
+	if IS_SERVER then
+		local fn = ReplicatedStorage:FindFirstChild("GetMap")
+		if fn then return fn:Invoke() end
+	end
+	local name = cfg().Get("mp_map")
+	return nil, (name ~= "" and name or nil)
+end
+
+function Glacier.ClearMap()
+	requireServer("ClearMap")
+	local e = Glacier.TryRemote("SetMap")
+	if not e then return false, "MapServer is not loaded" end
+	e:Fire(nil)
+	return true
+end
+
+--------------------------------------------------------------
+-- roster & teams
+--------------------------------------------------------------
+
+-- What a person actually types. Roblox Teams are case-sensitive children of a
+-- service, so FindFirstChild alone rejects every spelling below but "CT".
+local TEAM_ALIASES = {
+	t = "T", terrorist = "T", terrorists = "T", tt = "T",
+	ct = "CT", counter = "CT", ["counter-terrorist"] = "CT", counterterrorist = "CT",
+	spec = "Spectator", spectate = "Spectator", spectator = "Spectator", spectators = "Spectator",
+}
+
+function Glacier.Teams()
+	return game:GetService("Teams"):GetTeams()
+end
+
+-- Returns Team | nil, reason. Ambiguity is an error for the same reason it is
+-- in Config.ResolvePlayer: silently picking one of two is how a round starts
+-- with somebody on the wrong side.
+function Glacier.ResolveTeam(query)
+	if typeof(query) == "Instance" and query:IsA("Team") then return query end
+	if type(query) ~= "string" or query == "" then return nil, "expected a team name" end
+
+	local Teams = game:GetService("Teams")
+
+	local exact = Teams:FindFirstChild(query)
+	if exact and exact:IsA("Team") then return exact end
+
+	local lower = string.lower(query)
+	local aliased = TEAM_ALIASES[lower]
+	if aliased then
+		local team = Teams:FindFirstChild(aliased)
+		if team then return team end
+	end
+
+	local matches = {}
+	for _, team in ipairs(Teams:GetTeams()) do
+		if string.lower(team.Name) == lower then return team end
+		if string.find(string.lower(team.Name), lower, 1, true) then
+			table.insert(matches, team)
+		end
+	end
+	if #matches == 1 then return matches[1] end
+
+	if #matches > 1 then
+		local names = {}
+		for _, team in ipairs(matches) do table.insert(names, team.Name) end
+		return nil, ("'%s' is ambiguous: %s"):format(query, table.concat(names, ", "))
+	end
+
+	local names = {}
+	for _, team in ipairs(Teams:GetTeams()) do table.insert(names, team.Name) end
+	return nil, ("no team '%s' (have: %s)"):format(query,
+		#names > 0 and table.concat(names, ", ") or "none -- TeamsSetup only creates Spectator")
+end
+
+function Glacier.TeamOf(plr)
+	if typeof(plr) ~= "Instance" or not plr:IsA("Player") then return nil end
+	return plr.Team
+end
+
+-- respawn is opt-in. Moving a live player to the other side leaves them
+-- standing in the old team's spawn, which is usually what you want while
+-- testing and never what you want mid-round -- so the caller says which.
+function Glacier.SetTeam(plr, query, respawn)
+	requireServer("SetTeam")
+	if typeof(plr) ~= "Instance" or not plr:IsA("Player") then
+		return false, "SetTeam needs a Player"
+	end
+
+	local team, reason = Glacier.ResolveTeam(query)
+	if not team then return false, reason end
+
+	plr.Team = team
+	plr.Neutral = false
+
+	if respawn then Glacier.Respawn(plr) end
+	return true, team.Name
+end
+
+-- filter = { team = <name|Team>, alive = <bool>, exclude = <Player> }
+-- Every field is optional; no filter at all means everyone connected.
+function Glacier.PlayersWhere(filter)
+	filter = filter or {}
+
+	local team
+	if filter.team ~= nil then
+		local resolved, reason = Glacier.ResolveTeam(filter.team)
+		if not resolved then return {}, reason end
+		team = resolved
+	end
+
+	-- IsAlive goes through Lifecycle, which only exists on the server. Erroring
+	-- here names the filter; letting it through would error inside IsAlive with
+	-- nothing pointing back at the caller.
+	if filter.alive ~= nil then requireServer("a PlayersWhere 'alive' filter") end
+
+	local out = {}
+	for _, plr in ipairs(Players:GetPlayers()) do
+		local keep = true
+		if team and plr.Team ~= team then keep = false end
+		if keep and filter.exclude == plr then keep = false end
+		if keep and filter.alive ~= nil and Glacier.IsAlive(plr) ~= filter.alive then
+			keep = false
+		end
+		if keep then table.insert(out, plr) end
+	end
+	return out
+end
+
+function Glacier.AlivePlayers(team)
+	return Glacier.PlayersWhere({ team = team, alive = true })
+end
+
+function Glacier.PlayersOnTeam(team)
+	return Glacier.PlayersWhere({ team = team })
+end
+
+-- Accepts anything with a position: a Player, a body, a puppet, a bot model,
+-- a CFrame or a plain Vector3. Callers shouldn't have to branch on type just
+-- to measure a distance.
+local function positionArg(x)
+	if typeof(x) == "Vector3" then return x end
+	if typeof(x) == "CFrame" then return x.Position end
+	local entity, kind = Glacier.Identify(x)
+	if not entity then return nil end
+	return Glacier.PositionOf(entity, kind)
+end
+
+Glacier.PositionArg = positionArg
+
+function Glacier.Distance(a, b)
+	local pa, pb = positionArg(a), positionArg(b)
+	if not (pa and pb) then return nil end
+	return (pa - pb).Magnitude
+end
+
+function Glacier.PlayersInRadius(position, radius, filter)
+	local origin = positionArg(position)
+	local out = {}
+	if not origin then return out end
+
+	for _, plr in ipairs(Glacier.PlayersWhere(filter)) do
+		local pos = Glacier.PositionOf(plr, "player")
+		if pos and (pos - origin).Magnitude <= radius then
+			table.insert(out, plr)
+		end
+	end
+	return out
+end
+
+-- Returns player | nil, distance. A player with no body is skipped rather
+-- than counted at distance zero, which is what an unguarded PositionOf would
+-- do the moment somebody is mid-respawn.
+function Glacier.NearestPlayer(position, filter)
+	local origin = positionArg(position)
+	if not origin then return nil end
+
+	local best, bestDist
+	for _, plr in ipairs(Glacier.PlayersWhere(filter)) do
+		local pos = Glacier.PositionOf(plr, "player")
+		if pos then
+			local d = (pos - origin).Magnitude
+			if not bestDist or d < bestDist then best, bestDist = plr, d end
+		end
+	end
+	return best, bestDist
+end
+
+--------------------------------------------------------------
+-- weapons
+--------------------------------------------------------------
+
+-- All three go through WeaponRegistry, which is the only lookup that gets both
+-- spellings right: the ModuleScript name ("AK47") and the lowercase `name`
+-- field the wire packets carry ("ak47").
+function Glacier.WeaponClass(name)
+	return resolve("WeaponRegistry").Class(name)
+end
+
+function Glacier.WeaponStats(name)
+	return resolve("WeaponRegistry").Stats(name)
+end
+
+function Glacier.WeaponNames()
+	local out = {}
+	for class in pairs(resolve("WeaponRegistry").All()) do table.insert(out, class) end
+	table.sort(out)
+	return out
 end
 
 --------------------------------------------------------------
@@ -520,6 +882,12 @@ local SIGNALS = {
 		local e = ReplicatedStorage:FindFirstChild("OnDamage")
 		return e and e.Event or nil
 	end },
+	-- Fires with the live model, or nil on a clear. A gamemode waiting for a
+	-- map should listen here rather than polling workspace for the tag.
+	MapChanged = { vm = "server", get = function()
+		local e = ReplicatedStorage:FindFirstChild("MapChanged")
+		return e and e.Event or nil
+	end },
 
 	ActionPressed = { vm = "client", get = function()
 		local i = resolve("Input", true)
@@ -531,15 +899,19 @@ local SIGNALS = {
 	end },
 }
 
+function Glacier.ListSignals()
+	local names = {}
+	for k in pairs(SIGNALS) do table.insert(names, k) end
+	table.sort(names)
+	return table.concat(names, ", ")
+end
+
 -- Returns an RBXScriptConnection, so :Disconnect() works as normal.
 function Glacier.On(signalName, fn)
 	local entry = SIGNALS[signalName]
 	if not entry then
-		local names = {}
-		for k in pairs(SIGNALS) do table.insert(names, k) end
-		table.sort(names)
 		error(("[Glacier] unknown signal '%s'. Known: %s")
-			:format(tostring(signalName), table.concat(names, ", ")), 2)
+			:format(tostring(signalName), Glacier.ListSignals()), 2)
 	end
 	if entry.vm ~= vmName() then
 		error(("[Glacier] signal '%s' is %s-only; this is the %s VM.")
@@ -621,6 +993,18 @@ do
 				args = {},
 				help = "show which engine modules this VM has resolved",
 				run = function(ctx) ctx.reply(Glacier.Status()) end,
+			})
+
+			C.Command("glacier_flush", {
+				args = { "string?" },
+				flag = C.FCVAR.CHEAT,
+				help = "drop cached module handles so the next access re-resolves",
+				run = function(ctx, name)
+					Glacier.Flush(name)
+					ctx.reply(name
+						and ("[Glacier] flushed %s"):format(name)
+						or "[Glacier] flushed every cached module")
+				end,
 			})
 		end
 	end

@@ -998,6 +998,358 @@ Config.Command("find", {
 })
 
 --=====================================================================
+-- CVAR ALIASES  (Source / GoldSrc names over Glacier's own)
+--=====================================================================
+-- Glacier's movement cvars are mv_* and measured in STUDS. Everything a CS
+-- player already has muscle memory for is sv_* and measured in GoldSrc UNITS.
+-- Renaming the engine's own tunables is off the table -- every module reads
+-- mv_gravity by name -- so an alias is registered instead, as a COMMAND that
+-- reads and writes the real cvar with the unit conversion applied:
+--
+--   sv_gravity          -> "sv_gravity" = "800"  ( mv_gravity 72.7 )
+--   sv_gravity 400      -> mv_gravity = 36.3636
+--
+-- A command rather than a second cvar, for two reasons: Config.List() stays
+-- the list of things that actually exist, so a settings menu can't show the
+-- same number twice under two names; and the console picks commands up for
+-- autocomplete for free through OnCommandsChanged.
+--
+-- VM OWNERSHIP: an alias onto a REPLICATED cvar registers on the SERVER ONLY.
+-- runCommand rejects a REPLICATED command in the client VM rather than
+-- forwarding it, so a client-side registration would answer "server-only",
+-- while NO local entry at all makes the console forward the whole line to the
+-- server -- which is exactly how loadmap already reaches it.
+
+Config.Aliases = {}   -- [alias] = { target = key, scale = n }
+
+-- 1 stud ~ 11 GoldSrc units, the same conversion the comments above use.
+local UNITS_PER_STUD = 11
+Config.UNITS_PER_STUD = UNITS_PER_STUD
+
+-- 800 units of gravity divided by 11 and multiplied back is 799.9999...;
+-- printing that as the value of sv_gravity would look like a rounding bug.
+local function tidy(n)
+	if typeof(n) ~= "number" then return n end
+	return math.floor(n * 10000 + 0.5) / 10000
+end
+
+local function aliasReport(name, target, scale, isNumber)
+	local raw = Config.Values[target]
+	local shown = isNumber and tidy(raw / scale) or raw
+	return ('"%s" = "%s"  ( %s %s )'):format(name, tostring(shown), target, tostring(raw))
+end
+
+-- opts = { scale = number, flag = number, help = string }
+--   aliasValue * scale = engineValue
+-- so a cvar held in studs and typed in GoldSrc units takes scale 1/11.
+function Config.Alias(name, target, opts)
+	opts = opts or {}
+
+	if Config.Values[target] == nil then
+		warn(("[Config] alias '%s' points at unknown cvar '%s'."):format(name, tostring(target)))
+		return
+	end
+	if Config.Values[name] ~= nil then
+		warn(("[Config] '%s' is already a cvar; it cannot also be an alias."):format(name))
+		return
+	end
+
+	local flag = opts.flag or Config.Flags[target] or FCVAR.CLIENT
+
+	-- See VM OWNERSHIP above. Returning quietly is the point: the client is
+	-- meant to end up with no entry for this name.
+	if not isServer and bit32.band(flag, FCVAR.REPLICATED) ~= 0 then
+		return
+	end
+
+	local scale = opts.scale or 1
+	local isNumber = typeof(Config.Values[target]) == "number"
+	Config.Aliases[name] = { target = target, scale = scale }
+
+	Config.Command(name, {
+		args = { "string?" },
+		flag = flag,
+		help = opts.help or (scale == 1
+			and ("alias of " .. target)
+			or ("alias of %s, in GoldSrc units"):format(target)),
+		run = function(ctx, value)
+			if value == nil then
+				reply(ctx, aliasReport(name, target, scale, isNumber))
+				return true
+			end
+
+			local converted = value
+			if isNumber then
+				local n = tonumber(value)
+				if not n then
+					return false, ("%s: expected a number, got '%s'"):format(name, tostring(value))
+				end
+				converted = n * scale
+			end
+
+			local ok, reason = Config.Set(target, converted, ctx.forceOverride)
+			if not ok then return false, reason end
+
+			reply(ctx, aliasReport(name, target, scale, isNumber))
+			return true
+		end,
+	})
+end
+
+local GOLDSRC = 1 / UNITS_PER_STUD
+
+--------------------------------------------------------------
+-- movement  (server-owned: every target below is REPLICATED)
+--------------------------------------------------------------
+
+Config.Alias("sv_gravity",            "mv_gravity",             { scale = GOLDSRC })
+Config.Alias("sv_maxspeed",           "mv_walkSpeed",           { scale = GOLDSRC })
+Config.Alias("sv_stopspeed",          "mv_stopSpeed",           { scale = GOLDSRC })
+Config.Alias("sv_maxvelocity",        "mv_maxVelocity",         { scale = GOLDSRC })
+Config.Alias("sv_stepsize",           "mv_maxStepHeight",       { scale = GOLDSRC })
+Config.Alias("sv_jump_impulse",       "mv_jumpForce",           { scale = GOLDSRC })
+Config.Alias("sv_air_max_wishspeed",  "mv_airSpeedCap",         { scale = GOLDSRC })
+Config.Alias("sv_accelerate",         "mv_groundAcceleration")
+Config.Alias("sv_airaccelerate",      "mv_airAcceleration")
+Config.Alias("sv_friction",           "mv_groundFriction")
+Config.Alias("sv_edgefriction",       "mv_edgeFriction")
+Config.Alias("sv_noclipspeed",        "mv_noclipSpeed",         { scale = GOLDSRC })
+
+-- Both spellings exist in the wild -- GoldSrc/CSS shipped the first, CS:GO the
+-- second -- and players type whichever they learned.
+Config.Alias("sv_enablebunnyhopping", "mv_autoBhop")
+Config.Alias("sv_autobunnyhopping",   "mv_autoBhop")
+
+--------------------------------------------------------------
+-- match rules  (server-owned)
+--------------------------------------------------------------
+
+Config.Alias("mp_warmuptime",          "mp_warmupTime")
+Config.Alias("mp_warmup_pausetimer",   "mp_warmupInfinite")
+Config.Alias("mp_round_restart_delay", "mp_endRoundDelay")
+Config.Alias("mp_respawnwavetime",     "mp_respawnDelay")
+Config.Alias("spec_freeze_time",       "spec_deathCamTime")
+
+--------------------------------------------------------------
+-- client  (registered in BOTH VMs; these targets are FCVAR.CLIENT)
+--------------------------------------------------------------
+
+Config.Alias("fov",                    "cam_fov")
+Config.Alias("cl_crosshairsize",       "cl_crosshairlength")
+Config.Alias("cl_crosshair_drawoutline", "cl_crosshairoutline")
+Config.Alias("cl_bobamt_vert",         "cl_bobAmtVert")
+Config.Alias("cl_bobamt_lat",          "cl_bobAmtLat")
+Config.Alias("viewmodel_offset_x",     "vm_offsetX")
+Config.Alias("viewmodel_offset_y",     "vm_offsetY")
+Config.Alias("viewmodel_offset_z",     "vm_offsetZ")
+Config.Alias("volume",                 "cl_soundVolume")
+
+-- CS ships sensitivity around 2.5 where this engine wants 0.25, so the alias
+-- carries the factor rather than asking anyone to move a decimal point.
+Config.Alias("sensitivity",            "cl_mouseSensitivity", { scale = 0.1 })
+
+--=====================================================================
+-- USER ALIASES  (Source `alias`)
+--=====================================================================
+-- alias bhop "+jump; -jump"
+-- alias arms "primary ak47; secondary usp; melee knife"
+--
+-- The body is stored verbatim and re-tokenised on every run, so an alias that
+-- names a command registered later still works once it exists.
+
+Config.UserAliases = {}
+
+local ALIAS_MAX_DEPTH = 8
+local aliasDepth = 0
+
+-- ctx.exec is the console's own dispatcher when there is one. Going through it
+-- matters on the client: Config.Exec resolves in THIS VM only, so an alias
+-- containing a server command would die as "unknown command" instead of being
+-- forwarded up the same path a typed line takes.
+local function execLine(line, ctx)
+	if ctx and type(ctx.exec) == "function" then
+		return ctx.exec(line)
+	end
+	return Config.Exec(line, ctx)
+end
+
+local function runAliasBody(body, ctx)
+	if aliasDepth >= ALIAS_MAX_DEPTH then
+		return false, ("alias recursion deeper than %d; stopped"):format(ALIAS_MAX_DEPTH)
+	end
+
+	aliasDepth += 1
+	-- Semicolons split here rather than in the console, because an alias body
+	-- arrives as ONE token stream and never passes the console's own splitter.
+	local ok, err = pcall(function()
+		for part in string.gmatch(body, "[^;]+") do
+			if not part:match("^%s*$") then
+				execLine((part:gsub("^%s+", ""):gsub("%s+$", "")), ctx)
+			end
+		end
+	end)
+	aliasDepth -= 1
+
+	if not ok then return false, tostring(err) end
+	return true
+end
+
+function Config.DefineAlias(name, body)
+	if type(name) ~= "string" or name == "" then return false, "expected an alias name" end
+	if Config.Values[name] ~= nil then
+		return false, ("'%s' is a cvar."):format(name)
+	end
+	-- Overwriting a real command with a macro is how you lose `kill` to a typo.
+	if Config.Commands[name] and not Config.UserAliases[name] then
+		return false, ("'%s' is already a command."):format(name)
+	end
+
+	Config.UserAliases[name] = body
+	Config.Command(name, {
+		args = {},
+		flag = FCVAR.CLIENT,
+		help = ("alias: %s"):format(body),
+		run = function(ctx)
+			return runAliasBody(Config.UserAliases[name] or "", ctx)
+		end,
+	})
+	return true
+end
+
+function Config.RemoveAlias(name)
+	if not Config.UserAliases[name] then return false end
+	Config.UserAliases[name] = nil
+	Config.RemoveCommand(name)
+	return true
+end
+
+Config.Command("alias", {
+	args = { "string?", "rest?" },
+	help = "define a command that runs other commands, separated by ';'",
+	run = function(ctx, name, body)
+		if name == nil then
+			local names = {}
+			for key in pairs(Config.UserAliases) do table.insert(names, key) end
+			if #names == 0 then reply(ctx, "no aliases defined") return true end
+			table.sort(names)
+
+			local lines = {}
+			for _, key in ipairs(names) do
+				table.insert(lines, ('%s = "%s"'):format(key, Config.UserAliases[key]))
+			end
+			reply(ctx, table.concat(lines, "\n"))
+			return true
+		end
+
+		if body == nil then
+			local existing = Config.UserAliases[name]
+			if not existing then return false, ("no alias named '%s'"):format(name) end
+			reply(ctx, ('%s = "%s"'):format(name, existing))
+			return true
+		end
+
+		-- Quoting the body the way Source does is habit for anyone coming from
+		-- CS, and the tokeniser has no concept of quotes, so strip them here.
+		body = body:gsub('^"(.*)"$', "%1")
+
+		local ok, reason = Config.DefineAlias(name, body)
+		if not ok then return false, reason end
+		reply(ctx, ('alias %s = "%s"'):format(name, body))
+		return true
+	end,
+})
+
+Config.Command("unalias", {
+	args = { "string" },
+	help = "remove an alias",
+	run = function(ctx, name)
+		if not Config.RemoveAlias(name) then
+			return false, ("no alias named '%s'"):format(name)
+		end
+		reply(ctx, ("removed alias %s"):format(name))
+		return true
+	end,
+})
+
+--=====================================================================
+-- MORE BUILT-INS  (Source names)
+--=====================================================================
+
+Config.Command("cvarlist", {
+	args = { "string?" },
+	help = "list cvars with their values; give a prefix to narrow it",
+	run = function(ctx, prefix)
+		local keys = Config.List(prefix)
+		if #keys == 0 then
+			reply(ctx, ("no cvars matching '%s'"):format(tostring(prefix)))
+			return true
+		end
+
+		-- A full dump is 300-odd lines into a ring buffer that holds 512, which
+		-- costs you every line of scrollback you had. Truncate and say so.
+		local LIMIT = 60
+		local lines = {}
+		for i = 1, math.min(#keys, LIMIT) do
+			local key = keys[i]
+			local tags = {}
+			if Config.HasFlag(key, FCVAR.REPLICATED) then table.insert(tags, "rep") end
+			if Config.HasFlag(key, FCVAR.CHEAT) then table.insert(tags, "cheat") end
+			table.insert(lines, ("%-32s %s%s"):format(
+				key, tostring(Config.Values[key]),
+				#tags > 0 and ("  [" .. table.concat(tags, ",") .. "]") or ""))
+		end
+		if #keys > LIMIT then
+			table.insert(lines, ("... %d more; narrow it with a prefix"):format(#keys - LIMIT))
+		end
+
+		reply(ctx, table.concat(lines, "\n"))
+		return true
+	end,
+})
+
+Config.Command("differences", {
+	args = {},
+	help = "list every cvar that no longer matches its default",
+	run = function(ctx)
+		local lines = {}
+		for _, key in ipairs(Config.List()) do
+			local now, def = Config.Values[key], Config.Defaults[key]
+			if now ~= def then
+				table.insert(lines, ("%-32s %s  (default %s)")
+					:format(key, tostring(now), tostring(def)))
+			end
+		end
+
+		if #lines == 0 then reply(ctx, "everything is at its default") return true end
+		reply(ctx, table.concat(lines, "\n"))
+		return true
+	end,
+})
+
+Config.Command("incrementvar", {
+	args = { "string", "number", "number", "number" },
+	help = "step a numeric cvar, wrapping at the bounds (Source's bind helper)",
+	run = function(ctx, key, minValue, maxValue, delta)
+		local current = Config.Values[key]
+		if current == nil then return false, ("'%s' does not exist."):format(key) end
+		if typeof(current) ~= "number" then
+			return false, ("'%s' is a %s, not a number."):format(key, typeof(current))
+		end
+
+		local next_ = current + delta
+		-- Source wraps rather than clamps, which is what makes a single key
+		-- cycle a setting instead of parking it at one end.
+		if next_ > maxValue then next_ = minValue
+		elseif next_ < minValue then next_ = maxValue end
+
+		local ok, reason = Config.Set(key, next_, ctx.forceOverride)
+		if not ok then return false, reason end
+		reply(ctx, ("%s = %s"):format(key, tostring(next_)))
+		return true
+	end,
+})
+
+--=====================================================================
 -- METATABLE (Backward Compatibility)
 --=====================================================================
 setmetatable(Config, {
