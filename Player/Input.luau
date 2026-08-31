@@ -34,6 +34,13 @@ local Input = {}
 -- this, output from a bind lands in the log rather than the console.
 Input.Reply = nil
 
+-- Same idea, for the other direction. Set by the console to its own dispatcher
+-- so a bound line takes the same local/remote split a typed line does. Without
+-- it, execLine below resolves in this VM only, and `bind f "give ak47"` dies as
+-- an unknown command because give is registered on the SERVER -- the console
+-- would have forwarded it.
+Input.Exec = nil
+
 local MOUSE_TYPE_TO_KEYCODE = {
 	[Enum.UserInputType.MouseButton1] = Enum.KeyCode.MouseLeftButton,
 	[Enum.UserInputType.MouseButton2] = Enum.KeyCode.MouseRightButton,
@@ -359,7 +366,11 @@ local function execLine(line)
 	for chunk in string.gmatch(line, "[^;]+") do
 		local trimmed = chunk:match("^%s*(.-)%s*$")
 		if trimmed ~= "" then
-			Config.Exec(trimmed, { source = "bind", reply = replyTo })
+			if type(Input.Exec) == "function" then
+				Input.Exec(trimmed)
+			else
+				Config.Exec(trimmed, { source = "bind", reply = replyTo })
+			end
 		end
 	end
 end

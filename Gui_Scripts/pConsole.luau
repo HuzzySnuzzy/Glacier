@@ -601,6 +601,12 @@ function execOne(line)
 	end
 end
 
+-- Handed to Input here rather than up with Input.Reply, because execOne has to
+-- be declared before this line can capture it. Bound lines then take the same
+-- local/remote split a typed one does, which is what lets you bind a SERVER
+-- command -- give, respawn, loadmap -- or an alias containing one.
+Input.Exec = function(line) execOne(line) end
+
 local function submitCommand()
 	local rawText = inputField.Text
 	if rawText == "" or rawText:match("^%s*$") then return end
