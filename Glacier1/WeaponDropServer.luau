@@ -269,33 +269,37 @@ local function positionOf(object)
 	return object.Position
 end
 
--- Nearest first, so walking between two rifles gives you the one you're
--- standing on rather than whichever pairs() happened to hand back first.
-local function nearestPickup(plr, range)
+-- Returns the nearest pickup and its distance REGARDLESS of range, so the
+-- caller can tell "there's nothing here" apart from "it's four studs too far"
+-- -- the second was the failure that looked exactly like a dead keybind.
+local function nearestPickup(plr)
 	local from = Glacier.PositionOf(plr, "player")
-	if not from then return nil end
+	if not from then return nil, nil, "you have no body" end
 
 	local ownerDelay = Config.Get("sv_pickupOwnerDelay") or 0
 	local now = os.clock()
+	local floor = workspace.FallenPartsDestroyHeight
 
 	local best, bestDist
 	for object, info in pairs(pickups) do
-		if not object.Parent then
-			pickups[object] = nil
+		local position = object.Parent and positionOf(object) or nil
+
+		if not position then
+			pickups[object] = nil          -- destroyed out from under us
+		elseif position.Y < floor then
+			destroyPickup(object)          -- fell out of the world
 		else
 			-- Your own drop ignores you briefly, or the same keypress that
 			-- threw it picks it straight back up.
 			local blocked = info.owner == plr and (now - info.time) < ownerDelay
-			local position = not blocked and positionOf(object) or nil
-			if position then
+			if not blocked then
 				local d = (position - from).Magnitude
-				if d <= range and (not bestDist or d < bestDist) then
-					best, bestDist = object, d
-				end
+				if not bestDist or d < bestDist then best, bestDist = object, d end
 			end
 		end
 	end
 
+	if not best then return nil, nil, "nothing on the ground near you" end
 	return best, bestDist
 end
 
@@ -335,6 +339,21 @@ local function takePickup(plr, object, swap)
 	return true, info.class
 end
 
+-- The shared body of every pickup attempt. Returns ok, message -- the message
+-- is worth showing either way, which is what makes a failed pickup diagnosable
+-- instead of silent.
+local function attemptPickup(plr, range, swap)
+	local object, distance, reason = nearestPickup(plr)
+	if not object then return false, reason end
+
+	if distance > range then
+		return false, ("nothing in reach -- nearest is %s, %.1f studs away (sv_pickupRange %s)")
+			:format(tostring(pickups[object] and pickups[object].class), distance, tostring(range))
+	end
+
+	return takePickup(plr, object, swap)
+end
+
 --=====================================================================
 -- REMOTES IN
 --=====================================================================
@@ -353,22 +372,28 @@ end
 
 Players.PlayerRemoving:Connect(function(plr) lastAction[plr] = nil end)
 
+-- A refused drop or pickup used to do nothing at all, which reads exactly
+-- like a key that isn't bound. Saying why costs one console line and is the
+-- difference between "it's broken" and "you're two studs short".
+local function feedback(plr, verb, ok, message)
+	if not Config.Get("sv_pickupFeedback") then return end
+	if message == nil then return end
+	Glacier.Tell(plr, ("[%s] %s"):format(verb, tostring(message)), not ok)
+end
+
 DropWeapon.OnServerEvent:Connect(function(plr, slot)
 	if throttled(plr) then return end
 	-- The slot is the client's own, and SlotIndex rejects anything that isn't
 	-- one of the three, so there is nothing here worth validating harder.
-	local ok, reason = dropSlot(plr, slot)
-	if not ok and Config.Get("sv_lifecycleDebug") then
-		Glacier.Tell(plr, ("[drop] %s"):format(tostring(reason)))
-	end
+	local ok, result = dropSlot(plr, slot)
+	feedback(plr, "drop", ok, ok and ("dropped " .. result:GetAttribute("Class")) or result)
 end)
 
 PickupWeapon.OnServerEvent:Connect(function(plr)
 	if throttled(plr) then return end
 
-	local object = nearestPickup(plr, Config.Get("sv_pickupRange") or 8)
-	if not object then return end
-	takePickup(plr, object, true)
+	local ok, result = attemptPickup(plr, Config.Get("sv_pickupRange") or 8, true)
+	feedback(plr, "pickup", ok, ok and ("picked up " .. tostring(result)) or result)
 end)
 
 --=====================================================================
@@ -386,12 +411,16 @@ task.spawn(function()
 
 			for _, plr in ipairs(Players:GetPlayers()) do
 				if Glacier.IsAlive(plr) then
-					local object = nearestPickup(plr, range)
-					local info = object and pickups[object]
+					local object, distance = nearestPickup(plr)
+					local inRange = object and distance and distance <= range
+					local info = inRange and pickups[object] or nil
 					if info then
 						local slot = Inventory.SlotFor(info.class, Glacier.ActiveSlot(plr))
+						-- Empty slots only. Auto-swapping is how you lose a
+						-- rifle to a pistol lying in a doorway.
 						if slot and not Glacier.GetSlot(plr, slot) then
-							takePickup(plr, object, false)
+							local ok, result = takePickup(plr, object, false)
+							feedback(plr, "pickup", ok, ok and ("picked up " .. tostring(result)) or nil)
 						end
 					end
 				end
@@ -475,6 +504,22 @@ Config.Command("dropweapon", {
 	end,
 })
 
+Config.Command("pickupweapon", {
+	args = {},
+	flag = Config.FCVAR.REPLICATED,
+	help = "pick up the nearest weapon -- the same path +use takes, but it reports why it failed",
+	run = function(ctx)
+		local plr = ctx and ctx.player
+		if not plr then return false, "pickupweapon needs a player" end
+
+		local ok, result = attemptPickup(plr, Config.Get("sv_pickupRange") or 8, true)
+		if not ok then return false, result end
+
+		reply(ctx, ("[pickup] %s"):format(tostring(result)))
+		return true
+	end,
+})
+
 Config.Command("cleardrops", {
 	args = {},
 	flag = Config.FCVAR.REPLICATED,
@@ -492,12 +537,16 @@ Config.Command("drops", {
 	flag = Config.FCVAR.REPLICATED,
 	help = "list weapons lying on the ground",
 	run = function(ctx)
+		local from = ctx and ctx.player and Glacier.PositionOf(ctx.player, "player")
+
 		local lines = {}
 		for object, info in pairs(pickups) do
 			local position = positionOf(object)
-			table.insert(lines, ("%-12s %3d/%-3d  %s"):format(
+			table.insert(lines, ("%-12s %3d/%-3d  %-18s %s"):format(
 				info.class, info.ammo, info.reserve,
-				position and ("%.0f %.0f %.0f"):format(position.X, position.Y, position.Z) or "?"))
+				position and ("%.0f %.0f %.0f"):format(position.X, position.Y, position.Z) or "?",
+				(from and position)
+					and ("%.1f studs away"):format((position - from).Magnitude) or ""))
 		end
 
 		if #lines == 0 then reply(ctx, "[drop] nothing on the ground") return true end

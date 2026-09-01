@@ -32,11 +32,18 @@ local Bullets = require(script.Parent.Bullets)
 local Inventory = require(ReplicatedStorage:WaitForChild("Inventory"))
 
 local ReloadWeapon = ReplicatedStorage:WaitForChild("ReloadWeapon", 10)
-local DropWeapon   = ReplicatedStorage:WaitForChild("DropWeapon", 10)
-local PickupWeapon = ReplicatedStorage:WaitForChild("PickupWeapon", 10)
--- Same remote Player.luau listens on for the server's pushes; this is the
--- reverse direction, carrying nothing but which slot is equipped.
-local InventorySync = ReplicatedStorage:WaitForChild("InventorySync", 10)
+-- Resolved on USE, not at load. WaitForChild here would cache a nil for the
+-- whole session if WeaponDropServer happened to publish its remotes after this
+-- module was required -- and a nil cached behind an `if remote then` guard
+-- fails silently forever, which is indistinguishable from a dead keybind.
+local function remote(name)
+	local found = ReplicatedStorage:FindFirstChild(name)
+	if not found then
+		warn(("[Weapons] remote '%s' is missing -- is WeaponDropServer in ServerScriptService.Glacier1?")
+			:format(name))
+	end
+	return found
+end
 
 local Weapons = {}
 
@@ -264,9 +271,8 @@ local function reportActiveSlot()
 	local slot = State.activeSlot
 	if slot == lastReportedSlot then return end
 	lastReportedSlot = slot
-	if InventorySync then
-		InventorySync:FireServer({ activeSlot = slot })
-	end
+	local sync = remote("InventorySync")
+	if sync then sync:FireServer({ activeSlot = slot }) end
 end
 
 -- Drop and pickup are inventory changes, so the SERVER performs them: this
@@ -277,12 +283,14 @@ local function serviceInventoryRequests()
 
 	if State.dropRequested then
 		State.dropRequested = false
-		if DropWeapon then DropWeapon:FireServer(State.activeSlot) end
+		local drop = remote("DropWeapon")
+		if drop then drop:FireServer(State.activeSlot) end
 	end
 
 	if State.useRequested then
 		State.useRequested = false
-		if PickupWeapon then PickupWeapon:FireServer() end
+		local pickup = remote("PickupWeapon")
+		if pickup then pickup:FireServer() end
 	end
 end
 

@@ -337,13 +337,19 @@ Define("cl_spray_debug", false, FCVAR.CLIENT + FCVAR.CHEAT)
 -- client only needs these to decide whether to show a prompt.
 
 Define("sv_dropWeapons", true, FCVAR.REPLICATED)    -- master toggle for dropping
-Define("sv_dropForce", 22, FCVAR.REPLICATED)        -- studs/s of forward toss
-Define("sv_dropUpForce", 7, FCVAR.REPLICATED)       -- studs/s of lift, so it arcs
+-- Gentle on purpose. A hard throw lands the weapon well outside pickup range,
+-- which looks exactly like a broken pickup: you drop a rifle, walk to where
+-- you think it went, and nothing happens.
+Define("sv_dropForce", 14, FCVAR.REPLICATED)        -- studs/s of forward toss
+Define("sv_dropUpForce", 6, FCVAR.REPLICATED)       -- studs/s of lift, so it arcs
 Define("sv_dropSpin", 6, FCVAR.REPLICATED)          -- rad/s of tumble; 0 = none
 Define("sv_dropOnDeath", true, FCVAR.REPLICATED)    -- a corpse leaves its weapon behind
 Define("sv_dropMelee", false, FCVAR.REPLICATED)     -- CS won't let you drop the knife
 
-Define("sv_pickupRange", 8, FCVAR.REPLICATED)       -- studs from the body to +use
+-- Measured from the RawBody's centre, not the player's feet or hands, so this
+-- wants to be roomier than the arm's-length number it looks like.
+Define("sv_pickupRange", 12, FCVAR.REPLICATED)      -- studs from the body to +use
+Define("sv_pickupFeedback", true, FCVAR.REPLICATED) -- say why a drop or pickup was refused
 Define("sv_pickupAuto", false, FCVAR.REPLICATED)    -- walk-over pickup into an EMPTY slot
 Define("sv_pickupAutoRange", 4, FCVAR.REPLICATED)   -- tighter: you must walk onto it
 Define("sv_pickupOwnerDelay", 1, FCVAR.REPLICATED)  -- seconds before you can re-grab your own drop

@@ -419,6 +419,15 @@ function Lifecycle_API.GiveWeapon(plr, class, opts, slot)
 	if not Inventory.Give(inv, target, class, opts) then
 		return false, "could not create " .. tostring(class)
 	end
+
+	-- Equip it if their hands were empty. pushInventory sends activeSlot back
+	-- to the client, which obeys it -- so picking a pistol up into slot 2 while
+	-- the server still thought slot 1 was equipped would snap the player to an
+	-- EMPTY slot 1, and the pickup looked like it had failed entirely.
+	if not Inventory.Get(inv, inv.activeSlot) then
+		inv.activeSlot = target
+	end
+
 	pushInventory(plr)
 	return true, target
 end
