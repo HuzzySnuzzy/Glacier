@@ -975,16 +975,29 @@ pushParams.FilterType       = Enum.RaycastFilterType.Exclude
 pushParams.IgnoreWater      = true
 pushParams.RespectCanCollide = true
 
-local pushFilterBody, pushFilterPuppet
+local pushFilterBody, pushFilterPuppet, pushFilterDrops
+
+-- pushParams has RespectCanCollide set, and a dropped weapon's hull collides --
+-- so without this, walking over a rifle on the floor retracts your viewmodel as
+-- if you had put the muzzle against a wall. Resolved lazily: the server owns
+-- the folder, and a map reload replaces it.
+local function dropsFolder()
+	if pushFilterDrops and pushFilterDrops.Parent then return pushFilterDrops end
+	return workspace:FindFirstChild("WeaponDrops")
+end
 
 local function refreshPushFilter()
 	local body, puppet = State.playerBody, State.playerPuppet
-	if body == pushFilterBody and puppet == pushFilterPuppet then return end
-	pushFilterBody, pushFilterPuppet = body, puppet
+	local drops = dropsFolder()
+	if body == pushFilterBody and puppet == pushFilterPuppet and drops == pushFilterDrops then
+		return
+	end
+	pushFilterBody, pushFilterPuppet, pushFilterDrops = body, puppet, drops
 
 	local list = {}
 	if body   then table.insert(list, body)   end
 	if puppet then table.insert(list, puppet) end
+	if drops  then table.insert(list, drops)  end
 	pushParams.FilterDescendantsInstances = list
 end
 

@@ -130,16 +130,36 @@ local function Sweep(pos, size, displacement, params)
 	return workspace:Blockcast(CFrame.new(pos), size, displacement, params)
 end
 
+-- Everything the movement hull must never see. Your own body and puppet,
+-- obviously -- and dropped weapons, which are PROPS: a rifle lying on the
+-- floor is not level geometry, and letting one into these casts means it
+-- blocks a step, counts as "occupied" against an uncrouch, and can wedge you
+-- against a wall. Every other system may still hit them; this is the one that
+-- decides where a player can stand.
+--
+-- Re-looked-up rather than cached once: workspace.WeaponDrops is created by
+-- the server and may not exist when this module loads, and a map reload can
+-- replace it.
+local dropFolder
+
+local function ignoreList(body, puppet)
+	if not (dropFolder and dropFolder.Parent) then
+		dropFolder = workspace:FindFirstChild("WeaponDrops")
+	end
+	if dropFolder then return { body, puppet, dropFolder } end
+	return { body, puppet }
+end
+
 local function MakeParams(body, puppet)
 	local p = RaycastParams.new()
-	p.FilterDescendantsInstances = {body, puppet}
+	p.FilterDescendantsInstances = ignoreList(body, puppet)
 	p.FilterType = Enum.RaycastFilterType.Exclude
 	return p
 end
 
 local function MakeOverlapParams(body, puppet)
 	local op = OverlapParams.new()
-	op.FilterDescendantsInstances = {body, puppet}
+	op.FilterDescendantsInstances = ignoreList(body, puppet)
 	op.FilterType = Enum.RaycastFilterType.Exclude
 	op.MaxParts = 16
 	return op

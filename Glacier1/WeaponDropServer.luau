@@ -18,6 +18,7 @@
 
 local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
+local PhysicsService    = game:GetService("PhysicsService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config         = require(ReplicatedStorage:WaitForChild("Config"))
@@ -41,6 +42,31 @@ end
 
 local DropWeapon   = ensureRemote("DropWeapon")
 local PickupWeapon = ensureRemote("PickupWeapon")
+
+--=====================================================================
+-- COLLISION GROUPS
+--=====================================================================
+-- Drops collide with the world and nothing else. Two reasons:
+--
+--   A player's RawBody is ANCHORED and moved by CFrame, so a weapon resting
+--   against it gets punted across the room the moment they walk through it.
+--
+--   Drops piling on each other jitter forever, since each one keeps waking
+--   the others' assemblies.
+--
+-- Registration is idempotent-by-pcall and done from both ends: script start
+-- order between Glacier1's children isn't guaranteed, and whichever runs
+-- first should be able to use its own group immediately.
+
+local DROP_GROUP = "GlacierDrops"
+local BODY_GROUP = "GlacierBodies"
+
+do
+	pcall(PhysicsService.RegisterCollisionGroup, PhysicsService, DROP_GROUP)
+	pcall(PhysicsService.RegisterCollisionGroup, PhysicsService, BODY_GROUP)
+	pcall(PhysicsService.CollisionGroupSetCollidable, PhysicsService, DROP_GROUP, BODY_GROUP, false)
+	pcall(PhysicsService.CollisionGroupSetCollidable, PhysicsService, DROP_GROUP, DROP_GROUP, false)
+end
 
 -- One folder, so a map reload or a round reset can clear every loose weapon
 -- with a single Destroy instead of walking workspace looking for attributes.
@@ -86,48 +112,86 @@ local function cullOldest()
 	end
 end
 
+-- A dropped weapon is ONE invisible box, sized to the whole model, with every
+-- visual part welded to it and non-collidable.
+--
+-- Making the model's PrimaryPart the collider (the previous approach) reads as
+-- sensible and behaves badly: a PrimaryPart is normally a grip or muzzle
+-- attachment an inch across, so the rifle balanced on an invisible pin,
+-- sank through the floor it was supposedly resting on, and tipped over. One
+-- hull also stops the parts fighting each other for the same contact.
+local MIN_HULL = Vector3.new(0.9, 0.4, 0.9)
+
 -- The world model lives at the ReplicatedStorage root under the canonical
 -- class name -- the same one EquipWeaponEvent clones onto the puppet's arm.
 -- A weapon with no model still drops, as a labelled block: losing the item
 -- entirely because an artist hasn't made the mesh yet is worse.
 local function buildBody(class)
 	local template = WeaponRegistry.Model(class)
-	if template then
-		local model = template:Clone()
-		if model.PrimaryPart then return model, model.PrimaryPart end
-		-- A model with no PrimaryPart can't be welded or thrown coherently.
-		model:Destroy()
-	end
+	local model = template and template:Clone() or nil
 
-	local part = Instance.new("Part")
-	part.Name = class
-	part.Size = Vector3.new(1.6, 0.4, 0.4)
-	part.Color = Color3.fromRGB(120, 120, 130)
-	return part, part
-end
-
-local function preparePhysics(object, root)
-	for _, part in ipairs(object:IsA("Model") and object:GetDescendants() or { object }) do
-		if part:IsA("BasePart") then
-			part.Anchored = false
-			part.CanCollide = false
-			part.CanQuery = true
-			part.Massless = part ~= root
-
-			-- Welded rather than left loose: an unwelded multi-part rifle
-			-- explodes into its components the moment it lands.
-			if part ~= root then
-				local weld = Instance.new("WeldConstraint")
-				weld.Part0 = root
-				weld.Part1 = part
-				weld.Parent = root
-			end
+	-- GetBoundingBox is the model's own extents in its own orientation, which
+	-- is what the hull has to match -- GetExtentsSize is axis-aligned to the
+	-- world and would give a rifle lying diagonally a hull twice its size.
+	local hullCFrame, hullSize
+	if model then
+		local ok, cframe, size = pcall(model.GetBoundingBox, model)
+		if ok and size then
+			hullCFrame, hullSize = cframe, size
+		else
+			model:Destroy()
+			model = nil
 		end
 	end
 
-	-- Only the root collides, so the weapon rests on the floor without its
-	-- magazine and sights fighting each other for the same contact.
-	root.CanCollide = true
+	if not model then
+		model = Instance.new("Model")
+		hullCFrame, hullSize = CFrame.new(), Vector3.new(1.6, 0.4, 0.4)
+	end
+
+	local hull = Instance.new("Part")
+	hull.Name = "DropHull"
+	hull.Size = Vector3.new(
+		math.max(hullSize.X, MIN_HULL.X),
+		math.max(hullSize.Y, MIN_HULL.Y),
+		math.max(hullSize.Z, MIN_HULL.Z))
+	hull.CFrame = hullCFrame
+	hull.Transparency = template and 1 or 0        -- visible only as a stand-in
+	hull.Color = Color3.fromRGB(120, 120, 130)
+	hull.CanCollide = true
+	hull.CanQuery = true
+	hull.CanTouch = false
+	hull.CollisionGroup = DROP_GROUP
+
+	-- Draggy and inelastic: a weapon should stop where it lands rather than
+	-- skate across the floor or bounce down a flight of stairs.
+	hull.CustomPhysicalProperties = PhysicalProperties.new(1.2, 0.8, 0.05, 1, 1)
+
+	hull.Parent = model
+	model.PrimaryPart = hull
+	return model, hull
+end
+
+local function preparePhysics(object, root)
+	for _, part in ipairs(object:GetDescendants()) do
+		if part:IsA("BasePart") and part ~= root then
+			part.Anchored = false
+			part.CanCollide = false   -- the hull is the only collider
+			part.CanQuery = true      -- but they still stop a pickup raycast
+			part.CanTouch = false
+			part.Massless = true
+			part.CollisionGroup = DROP_GROUP
+
+			-- Welded rather than left loose: an unwelded multi-part rifle
+			-- explodes into its components the moment it lands.
+			local weld = Instance.new("WeldConstraint")
+			weld.Part0 = root
+			weld.Part1 = part
+			weld.Parent = root
+		end
+	end
+
+	root.Anchored = false
 end
 
 -- item is an Inventory item, so ammo and reserve travel with it.
@@ -150,11 +214,7 @@ local function spawnPickup(item, cframe, velocity, owner)
 	object:SetAttribute("Reserve", item.reserve or 0)
 	object:SetAttribute("DroppedBy", owner and owner.UserId or 0)
 
-	if object:IsA("Model") then
-		object:PivotTo(cframe)
-	else
-		object.CFrame = cframe
-	end
+	object:PivotTo(cframe)   -- moves the hull and everything welded to it
 	object.Parent = dropFolder
 
 	if velocity then

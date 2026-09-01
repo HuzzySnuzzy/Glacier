@@ -181,6 +181,17 @@ local function createBody(plr, cframe)
 	local body = template:Clone()
 	body.Name = plr.UserId .. "RawBody"
 	body.Anchored = true
+
+	-- Dropped weapons are told not to collide with this group. The body is
+	-- anchored and moved by CFrame, so without that a rifle lying on the floor
+	-- gets punted across the room by anyone who walks through it. Registered
+	-- here as well as in WeaponDropServer because either script may run first,
+	-- and pcall'd because registering an existing group throws.
+	pcall(function()
+		local PhysicsService = game:GetService("PhysicsService")
+		pcall(PhysicsService.RegisterCollisionGroup, PhysicsService, "GlacierBodies")
+		body.CollisionGroup = "GlacierBodies"
+	end)
 	-- Positioned before parenting so it never appears at origin for a frame.
 	if typeof(cframe) == "CFrame" then
 		body.CFrame = cframe
