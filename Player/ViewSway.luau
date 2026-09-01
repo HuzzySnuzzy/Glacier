@@ -35,6 +35,13 @@ local sprintBlend          = 0
 -- Impulse spring: one vertical axis, pitch is derived from it.
 local springPos, springVel = 0, 0
 
+-- Fire kick, on its own spring because it is a stiffer, faster event than a
+-- landing and sharing one would make a burst feel like a series of small
+-- falls. One scalar drives back-travel, pitch, yaw and roll together, so a
+-- shot reads as a single jolt rather than four independent wobbles.
+local kick, kickVel = 0, 0
+local kickSide = 1
+
 --=====================================================================
 -- HELPERS
 --=====================================================================
@@ -89,6 +96,29 @@ function ViewSway.Land(impactY)
 	springVel = springVel - dip * 6   -- bias the spring downward, not just offset it
 end
 
+-- Called by Weapons the moment a shot leaves. spreadDeg is the CURRENT cone
+-- from Recoil.inaccuracy -- the same number the crosshair gap is drawn from,
+-- and mostly movement, which is what makes firing on the run kick harder.
+function ViewSway.Fire(spreadDeg)
+	if Config.vm_sway == false then return end
+
+	local base = Config.vm_fireKick or 0
+	if base <= 0 then return end
+
+	local ref = Config.vm_fireKickSpreadRef or 3
+	local moveFrac = (ref > 0) and math.clamp((spreadDeg or 0) / ref, 0, 1) or 0
+	local amount = base * (1 + moveFrac * (Config.vm_fireKickMoveMult or 0))
+
+	-- Position AND velocity: the offset alone would ease in from rest, which
+	-- looks like the gun drifting back rather than being shoved.
+	kick = kick + amount
+	kickVel = kickVel + amount * 8
+
+	-- Whichever way the last shot whipped, this one is as likely to go the
+	-- other way -- a fixed side turns a spray into a steady lean.
+	kickSide = (math.random() < 0.5) and -1 or 1
+end
+
 -- Respawn, weapon rebuild, spectate exit. Everything back to rest.
 function ViewSway.Reset()
 	lastCamX, lastCamY = nil, nil
@@ -98,6 +128,7 @@ function ViewSway.Reset()
 	movRoll = 0
 	sprintBlend = 0
 	springPos, springVel = 0, 0
+	kick, kickVel = 0, 0
 	ViewSway.offset = CFrame.identity
 end
 
@@ -192,6 +223,14 @@ function ViewSway.Update(deltaTime, speed)
 	-- read as a wobble.
 	local springPitch = springPos * (Config.vm_landPitch or 45)
 
+	-- Fire kick, stepped on its own spring.
+	kick, kickVel = stepSpring(kick, kickVel, dt,
+		Config.vm_fireKickFreq or 9, Config.vm_fireKickDamp or 0.5)
+
+	if math.abs(kick) < 0.0005 and math.abs(kickVel) < 0.005 then
+		kick, kickVel = 0, 0
+	end
+
 	--------------------------------------------------------------
 	-- 4. SPRINT POSE
 	--------------------------------------------------------------
@@ -213,11 +252,19 @@ function ViewSway.Update(deltaTime, speed)
 	--------------------------------------------------------------
 	local px = lagPosX + movX + (Config.vm_sprintX or 0.25) * sb
 	local py = lagPosY + movY + springPos + (Config.vm_sprintY or -0.18) * sb
-	local pz = movZ + (Config.vm_sprintZ or 0.15) * sb
+	-- +Z is backward in viewmodel space (the header's -Z forward), so the kick
+	-- drives the gun toward the player.
+	local pz = movZ + kick + (Config.vm_sprintZ or 0.15) * sb
 
-	local rPitch = lagPitch + springPitch + (Config.vm_sprintPitch or -8) * sb
-	local rYaw   = lagYaw + (Config.vm_sprintYaw or 22) * sb
-	local rRoll  = movRoll + (Config.vm_sprintRoll or -12) * sb
+	local rPitch = lagPitch + springPitch
+		+ kick * (Config.vm_fireKickPitch or 85)
+		+ (Config.vm_sprintPitch or -8) * sb
+	local rYaw   = lagYaw
+		+ kick * kickSide * (Config.vm_fireKickYaw or 10)
+		+ (Config.vm_sprintYaw or 22) * sb
+	local rRoll  = movRoll
+		+ kick * kickSide * (Config.vm_fireKickRoll or 7)
+		+ (Config.vm_sprintRoll or -12) * sb
 
 	ViewSway.offset = CFrame.new(px, py, pz)
 		* CFrame.Angles(math.rad(rPitch), math.rad(rYaw), math.rad(rRoll))

@@ -29,6 +29,7 @@ local State   = require(script.Parent.State)
 local Visuals = require(script.Parent.Visuals)
 local Sounds  = require(script.Parent.Sounds)
 local Bullets = require(script.Parent.Bullets)
+local ViewSway = require(script.Parent.ViewSway)
 local Inventory = require(ReplicatedStorage:WaitForChild("Inventory"))
 
 local ReloadWeapon = ReplicatedStorage:WaitForChild("ReloadWeapon", 10)
@@ -203,6 +204,10 @@ local function fire(s)
 
 	State.spreadDegrees = math.deg(inacc)
 
+	-- The gun gets shoved as well as the camera, and harder the wider the cone
+	-- is -- which is mostly how fast you are moving.
+	ViewSway.Fire(State.spreadDegrees)
+
 	Visuals.PlayAnim("Fire", 0.02, nil, false)
 	Sounds.Push("weapon", "Fire")
 
@@ -284,7 +289,9 @@ local function serviceInventoryRequests()
 	if State.dropRequested then
 		State.dropRequested = false
 		local drop = remote("DropWeapon")
-		if drop then drop:FireServer(State.activeSlot) end
+		-- The server cannot read our velocity: the RawBody it would read it
+		-- from is anchored and moved by CFrame, so it is always zero there.
+		if drop then drop:FireServer(State.activeSlot, State.velocity) end
 	end
 
 	if State.useRequested then

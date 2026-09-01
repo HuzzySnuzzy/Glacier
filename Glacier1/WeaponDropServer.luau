@@ -219,12 +219,17 @@ local function spawnPickup(item, cframe, velocity, owner)
 
 	if velocity then
 		root.AssemblyLinearVelocity = velocity
+		-- A random DIRECTION at a fixed magnitude, not three independent random
+		-- components: the latter can land near zero on all three axes, and
+		-- those are exactly the drops that come to rest flat and upright like
+		-- a placed prop. The 0.7-1.3 factor keeps them from all tumbling at an
+		-- identical rate.
 		local spin = Config.Get("sv_dropSpin") or 0
 		if spin > 0 then
-			root.AssemblyAngularVelocity = Vector3.new(
-				(math.random() - 0.5) * spin,
-				(math.random() - 0.5) * spin,
-				(math.random() - 0.5) * spin)
+			local dir = Vector3.new(
+				math.random() - 0.5, math.random() - 0.5, math.random() - 0.5)
+			if dir.Magnitude < 1e-3 then dir = Vector3.xAxis end
+			root.AssemblyAngularVelocity = dir.Unit * spin * (0.7 + math.random() * 0.6)
 		end
 	end
 
@@ -258,7 +263,15 @@ end
 -- The Puppet's root is re-CFramed from the client every frame, so it faces
 -- where the player is actually looking. The RawBody is only re-oriented on
 -- spawn and teleport, which is why a drop keyed off it flies out sideways.
-local function throwFrom(plr)
+-- carried is the thrower's own velocity, sent by the client with the request.
+--
+-- It has to come from there. The RawBody is ANCHORED and moved by CFrame, so
+-- its AssemblyLinearVelocity is permanently zero -- reading it (which this did)
+-- meant a weapon dropped at a full sprint was launched as if the player were
+-- standing still, and promptly got left behind. Clamped to mv_maxVelocity on
+-- arrival, which bounds a lying client to what a fast legitimate one could
+-- already have.
+local function throwFrom(plr, carried)
 	local body = Glacier.RawBody(plr)
 	if not body then return nil end
 
@@ -267,16 +280,30 @@ local function throwFrom(plr)
 	local cframe = root and root.CFrame or body.CFrame
 
 	local look = cframe.LookVector
-	local origin = CFrame.new(cframe.Position + look * 2 + Vector3.new(0, 1, 0))
-		* (cframe - cframe.Position)
 
+	-- Thrown from a random orientation as well as with a random spin. A weapon
+	-- released along a clean axis tends to settle onto one, and a rifle lying
+	-- perfectly flat and square reads as scenery rather than something someone
+	-- dropped mid-fight.
+	local origin = CFrame.new(cframe.Position + look * 2 + Vector3.new(0, 1, 0))
+		* CFrame.Angles(
+			math.random() * math.pi * 2,
+			math.random() * math.pi * 2,
+			math.random() * math.pi * 2)
+
+	local jitter = Config.Get("sv_dropJitter") or 0
 	local velocity = look * (Config.Get("sv_dropForce") or 0)
 		+ Vector3.new(0, Config.Get("sv_dropUpForce") or 0, 0)
+		+ Vector3.new(
+			(math.random() - 0.5) * jitter,
+			(math.random() - 0.5) * jitter * 0.5,
+			(math.random() - 0.5) * jitter)
 
-	-- Inherit the thrower's motion, or a weapon dropped while sprinting hangs
-	-- in the air behind them.
-	local carried = body.AssemblyLinearVelocity
-	if typeof(carried) == "Vector3" then velocity += carried end
+	if typeof(carried) == "Vector3" and carried.Magnitude > 0 then
+		local cap = Config.Get("mv_maxVelocity") or 320
+		if carried.Magnitude > cap then carried = carried.Unit * cap end
+		velocity += carried * (Config.Get("sv_dropInherit") or 1)
+	end
 
 	return origin, velocity
 end
@@ -286,7 +313,7 @@ end
 --=====================================================================
 
 -- Returns ok, pickup | reason.
-local function dropSlot(plr, slot)
+local function dropSlot(plr, slot, carried)
 	if not Config.Get("sv_dropWeapons") then return false, "dropping is disabled" end
 	if not Glacier.IsAlive(plr) then return false, "you're not alive" end
 
@@ -299,7 +326,7 @@ local function dropSlot(plr, slot)
 	local item = Glacier.GetSlot(plr, slot)
 	if not item then return false, "that slot is empty" end
 
-	local origin, velocity = throwFrom(plr)
+	local origin, velocity = throwFrom(plr, carried)
 	if not origin then return false, "you have no body" end
 
 	-- Taken BEFORE the pickup is built: if spawnPickup fails the item goes
@@ -441,11 +468,13 @@ local function feedback(plr, verb, ok, message)
 	Glacier.Tell(plr, ("[%s] %s"):format(verb, tostring(message)), not ok)
 end
 
-DropWeapon.OnServerEvent:Connect(function(plr, slot)
+DropWeapon.OnServerEvent:Connect(function(plr, slot, velocity)
 	if throttled(plr) then return end
 	-- The slot is the client's own, and SlotIndex rejects anything that isn't
-	-- one of the three, so there is nothing here worth validating harder.
-	local ok, result = dropSlot(plr, slot)
+	-- one of the three, so there is nothing here worth validating harder. The
+	-- velocity is clamped in throwFrom and only ever affects how far a prop
+	-- flies, so it is not worth validating harder either.
+	local ok, result = dropSlot(plr, slot, velocity)
 	feedback(plr, "drop", ok, ok and ("dropped " .. result:GetAttribute("Class")) or result)
 end)
 

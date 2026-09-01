@@ -279,6 +279,10 @@ RunService.Heartbeat:Connect(function()
 
 		
 		PuppetSync:FireServer({
+			-- Shared clock, so the receiver can order and interpolate these.
+			-- os.clock() would be each machine's own epoch and meaningless
+			-- anywhere but the sender.
+			T = workspace:GetServerTimeNow(),
 			CFRAME = State.playerPuppet.PrimaryPart.CFrame,
 			LOOK_PITCH = State.cameraY or 0,
 			CROUCHED = State.isCrouching or State.isProne,
@@ -323,6 +327,150 @@ local function UpdateBoneLookPitch(puppet, lookPitchDeg)
 	end
 end
 local lastSeenWeapon = nil
+--=====================================================================
+-- REMOTE PUPPET INTERPOLATION
+--=====================================================================
+-- Remote puppets used to be snapped straight onto whatever CFrame last
+-- arrived. PuppetSync is an UnreliableRemoteEvent fired from a RenderStepped
+-- loop, so packets arrive at an irregular rate, out of order, and sometimes
+-- not at all -- and every bit of that showed up as jitter.
+--
+-- Instead each packet goes into a small buffer keyed on the SENDER's clock,
+-- and rendering happens at (now - cl_interp), between the two snapshots that
+-- bracket it. Standard Source snapshot interpolation.
+
+local remoteBuffers = {}   -- [Player] = { {t, cf, pitch}, ... } oldest first
+local MAX_SNAPSHOTS = 32
+
+local function pushSnapshot(plr, packet)
+	local buf = remoteBuffers[plr]
+	if not buf then
+		buf = {}
+		remoteBuffers[plr] = buf
+	end
+
+	-- Sender's stamp where there is one. Receive time is the fallback, and it
+	-- is strictly worse: a packet delayed in flight carries an OLD pose with a
+	-- NEW arrival time, which is exactly the reordering this is meant to undo.
+	local t = (type(packet.T) == "number") and packet.T or workspace:GetServerTimeNow()
+
+	-- recv is our own clock at arrival. Pairing it with the sender's stamp is
+	-- what lets the render clock below absorb latency instead of fighting it.
+	local snapshot = { t = t, recv = os.clock(), cf = packet.CFRAME, pitch = packet.LOOK_PITCH or 0 }
+
+	-- Insert in time order rather than appending: a late packet belongs where
+	-- it was sent, not at the end.
+	local i = #buf
+	while i > 0 and buf[i].t > t do i -= 1 end
+	if i > 0 and buf[i].t == t then return end   -- duplicate
+	table.insert(buf, i + 1, snapshot)
+
+	while #buf > MAX_SNAPSHOTS do table.remove(buf, 1) end
+end
+
+local function puppetOf(plr)
+	local rawBody = workspace:FindFirstChild(plr.UserId .. "RawBody")
+	return rawBody and rawBody:FindFirstChild("Puppet") or nil
+end
+
+-- Position at renderTime, or nil when the buffer cannot answer.
+local function sampleAt(buf, renderTime)
+	if #buf == 0 then return nil end
+
+	-- Ahead of everything we hold: the buffer ran dry.
+	if renderTime >= buf[#buf].t then
+		local newest = buf[#buf]
+		if not Config.cl_extrapolate or #buf < 2 then return newest.cf, newest.pitch end
+
+		local gap = renderTime - newest.t
+		if gap > (Config.cl_extrapolateMax or 0.25) then return newest.cf, newest.pitch end
+
+		-- Coast on the last known velocity. Rotation is deliberately NOT
+		-- extrapolated: a spinning player would wind up like a top.
+		local prev = buf[#buf - 1]
+		local dt = newest.t - prev.t
+		if dt <= 0 then return newest.cf, newest.pitch end
+
+		local vel = (newest.cf.Position - prev.cf.Position) / dt
+		return newest.cf + vel * gap, newest.pitch
+	end
+
+	-- Behind everything: hold the oldest rather than guessing backwards.
+	if renderTime <= buf[1].t then return buf[1].cf, buf[1].pitch end
+
+	for i = 1, #buf - 1 do
+		local a, b = buf[i], buf[i + 1]
+		if renderTime >= a.t and renderTime <= b.t then
+			local span = b.t - a.t
+			local alpha = (span > 0) and ((renderTime - a.t) / span) or 1
+			-- CFrame:Lerp slerps the rotation, so a turning player sweeps
+			-- through the turn instead of snapping across it.
+			return a.cf:Lerp(b.cf, alpha), a.pitch + (b.pitch - a.pitch) * alpha
+		end
+	end
+
+	local newest = buf[#buf]
+	return newest.cf, newest.pitch
+end
+
+-- The render clock, in the SENDER's timebase.
+--
+-- Not GetServerTimeNow() - cl_interp, which is the obvious version and is
+-- wrong: that measures the buffer from a clock the packet has already spent
+-- its latency travelling under, so the depth actually available is
+-- cl_interp MINUS latency. At 100ms of ping and cl_interp 0.1 there is no
+-- buffer left at all, every frame extrapolates, and the jitter is back.
+--
+-- Instead the offset between the two clocks is observed directly from the
+-- newest packet (which folds latency in), so the buffer is cl_interp deep no
+-- matter how far away the sender is. Smoothed, because a single delayed
+-- packet reports a smaller offset and would otherwise yank the clock; snapped
+-- when the two disagree wildly, which means the sender respawned, rejoined,
+-- or the connection stalled long enough that easing back would take seconds.
+local function renderClock(buf, interp)
+	local newest = buf[#buf]
+	local offset = newest.t - newest.recv
+
+	if not buf.offset or math.abs(offset - buf.offset) > 0.5 then
+		buf.offset = offset
+	else
+		buf.offset += (offset - buf.offset) * 0.1
+	end
+
+	return os.clock() + buf.offset - interp
+end
+
+local function updateRemotePuppets()
+	local interp = Config.cl_interp or 0.1
+
+	for plr, buf in pairs(remoteBuffers) do
+		if not plr.Parent then
+			remoteBuffers[plr] = nil
+		elseif #buf == 0 then
+			-- nothing to draw from yet
+		else
+			local renderTime = renderClock(buf, interp)
+			local puppet = puppetOf(plr)
+			if puppet and puppet.PrimaryPart then
+				local cf, pitch = sampleAt(buf, renderTime)
+				if cf then
+					puppet.PrimaryPart.CFrame = cf
+					UpdateBoneLookPitch(puppet, pitch)
+				end
+			end
+
+			-- Anything older than the two samples bracketing renderTime is
+			-- dead weight; keep one spare for the extrapolation velocity.
+			-- Reusing renderTime rather than asking again: renderClock steps
+			-- the offset filter, and calling it twice a frame would advance
+			-- that filter at double rate.
+			while #buf > 2 and buf[2].t < renderTime do table.remove(buf, 1) end
+		end
+	end
+end
+
+Players.PlayerRemoving:Connect(function(plr) remoteBuffers[plr] = nil end)
+
 PuppetSync.OnClientEvent:Connect(function(plr, packet)
 	if plr == Players.LocalPlayer then return end
 	if type(packet) ~= "table" then return end
@@ -338,16 +486,28 @@ PuppetSync.OnClientEvent:Connect(function(plr, packet)
 	Spectate.NoteRemote(plr, packet)    -- ADD
 
 
-	if packet.CFRAME and puppet.PrimaryPart then
-		puppet.PrimaryPart.CFrame = packet.CFRAME
-	end
-	
-	if packet.LOOK_PITCH then
-		UpdateBoneLookPitch(puppet, packet.LOOK_PITCH)
+	if typeof(packet.CFRAME) == "CFrame" and puppet.PrimaryPart then
+		if Config.cl_interpolateRemotes == false then
+			-- Escape hatch: snap straight to the packet, the old behaviour.
+			puppet.PrimaryPart.CFrame = packet.CFRAME
+			if packet.LOOK_PITCH then UpdateBoneLookPitch(puppet, packet.LOOK_PITCH) end
+		else
+			pushSnapshot(plr, packet)
+		end
 	end
 
 	-- Idempotent, so a dropped packet self-corrects next frame.
 	Visuals.ApplyRemoteState(puppet, packet.ANIM, packet.ANIM_SPEED, packet.WEAPON)
+end)
+
+-- Its own connection rather than a line in the main render loop, for two
+-- reasons: that loop returns early when the local player has no body, and
+-- remote puppets still have to move while you are dead or spectating; and
+-- updateRemotePuppets is declared below it, so it could not be called from
+-- there without a forward declaration.
+RunService.RenderStepped:Connect(function()
+	if Config.cl_interpolateRemotes == false then return end
+	updateRemotePuppets()
 end)
 
 local AnimDefs = require(ReplicatedStorage:WaitForChild("AnimDefs"))

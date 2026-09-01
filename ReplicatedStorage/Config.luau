@@ -246,9 +246,12 @@ Define("cl_bobAmtLat", 2.5, FCVAR.CLIENT)
 -- so the angle-dominant character survives while the slide becomes readable.
 Define("cl_bobTrans", 3.0, FCVAR.CLIENT)
 
--- Was 0.12, which put a constant droop 6x larger than the oscillation on top
--- of it. Off by default; 0.02-0.04 if you want a slight settle at speed.
-Define("cl_bobLowerAmt", 0, FCVAR.CLIENT)
+-- CS:GO lowers the viewmodel while you move (cl_bob_lower_amt, which ships at
+-- 21 of 30 there -- it is not a subtle effect in that game). This shipped at 0,
+-- so the gun sat at exactly the same height standing still and sprinting.
+-- 0.03 is the settle this file's own note recommends; raise toward 0.06 for
+-- something closer to CS:GO's droop.
+Define("cl_bobLowerAmt", 0.03, FCVAR.CLIENT)
 
 -- Set to walk speed, not 320 units. Source's 320 leaves a running player at a
 -- 0.78 ratio, which stretches every cycle by 28%. At walk speed the ratio
@@ -310,6 +313,23 @@ Define("vm_moveMax", 0.50)        -- studs clamp per axis
 Define("vm_moveRollMax", 15)      -- deg clamp
 Define("vm_moveSmooth", 7)
 
+-- Fire kick. CS:GO jolts the VIEWMODEL on every shot, separately from the aim
+-- punch it puts on the camera -- this engine had the camera half only, so the
+-- gun itself never moved when you pulled the trigger.
+--
+-- The kick scales with the current inaccuracy cone, and the cone is mostly
+-- movement, so firing on the run visibly throws the gun around more than
+-- firing planted. That is the velocity connection: it is the same number the
+-- crosshair gap is drawn from.
+Define("vm_fireKick", 0.055)          -- studs of backward travel per shot, at rest
+Define("vm_fireKickPitch", 85)        -- deg of muzzle rise per stud of kick
+Define("vm_fireKickYaw", 10)          -- deg of random lateral whip
+Define("vm_fireKickRoll", 7)
+Define("vm_fireKickFreq", 9)          -- Hz; stiffer than the landing spring
+Define("vm_fireKickDamp", 0.5)
+Define("vm_fireKickMoveMult", 1.5)    -- extra kick at a full-size cone; 0 = ignore movement
+Define("vm_fireKickSpreadRef", 3)     -- degrees of cone that counts as "full"
+
 -- Jump / land impulses
 Define("vm_jumpKick", 0.05)       -- studs, downward on takeoff
 Define("vm_landDip", 0.0015)      -- studs per stud/s of impact speed
@@ -331,6 +351,26 @@ Define("vm_sprintBlend", 8)       -- blend rate in/out
 --=====================================================================
 -- CHARACTER RENDERING
 --=====================================================================
+
+--=====================================================================
+-- REMOTE INTERPOLATION  (Source cl_interp)
+--=====================================================================
+-- Remote puppets are rendered in the PAST, between the two snapshots that
+-- bracket now - cl_interp, rather than snapped to the newest packet. PuppetSync
+-- is unreliable and fires from a RenderStepped loop, so packets arrive at an
+-- irregular rate and some never arrive at all -- snapping to each one shows
+-- every bit of that as jitter.
+--
+-- The cost is latency: a remote player is drawn cl_interp seconds behind where
+-- they say they are. Hit registration already rewinds, so this does not cost
+-- accuracy -- only the size of the lead you have to give a moving target.
+
+Define("cl_interpolateRemotes", true, FCVAR.CLIENT)
+Define("cl_interp", 0.1, FCVAR.CLIENT)            -- seconds of buffer
+-- Ran dry (a gap longer than cl_interp): coast on the last known velocity for
+-- up to this long before freezing. Beyond it, a stale pose beats a wrong one.
+Define("cl_extrapolate", true, FCVAR.CLIENT)
+Define("cl_extrapolateMax", 0.25, FCVAR.CLIENT)
 
 Define("cl_noOrient", false, FCVAR.CLIENT)
 Define("cl_hidepuppet", false, FCVAR.CLIENT)
@@ -366,7 +406,9 @@ Define("sv_dropWeapons", true, FCVAR.REPLICATED)    -- master toggle for droppin
 -- you think it went, and nothing happens.
 Define("sv_dropForce", 14, FCVAR.REPLICATED)        -- studs/s of forward toss
 Define("sv_dropUpForce", 6, FCVAR.REPLICATED)       -- studs/s of lift, so it arcs
-Define("sv_dropSpin", 6, FCVAR.REPLICATED)          -- rad/s of tumble; 0 = none
+Define("sv_dropSpin", 9, FCVAR.REPLICATED)          -- rad/s of tumble; 0 = none
+Define("sv_dropJitter", 3, FCVAR.REPLICATED)        -- studs/s of random scatter on the toss
+Define("sv_dropInherit", 1, FCVAR.REPLICATED)       -- how much of the thrower's velocity carries
 Define("sv_dropOnDeath", true, FCVAR.REPLICATED)    -- a corpse leaves its weapon behind
 Define("sv_dropMelee", false, FCVAR.REPLICATED)     -- CS won't let you drop the knife
 
