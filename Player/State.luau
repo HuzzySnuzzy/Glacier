@@ -75,6 +75,9 @@ return {
 	melee = "Knife",
 	activeSlot = 1, -- Starts with Slot 1 (Primary) equipped
 	currentWeaponStats = nil, -- Holds the data from the weapon module
+	-- Held weapon's maxPlayerSpeed as a fraction of mv_walkSpeed. Published by
+	-- Physics each tick; 1 means no penalty.
+	weaponSpeedScale = 1,
 	currentAmmo = 0,
 	reserveAmmo = 0,
 	isShooting = false,       -- True if holding left click

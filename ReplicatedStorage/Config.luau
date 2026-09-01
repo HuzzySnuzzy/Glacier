@@ -142,6 +142,14 @@ Define("mv_noclipSpeed", 45, FCVAR.CHEAT)
 Define("mv_autoBhop", false, FCVAR.REPLICATED + FCVAR.CHEAT)
 Define("mv_crouchHold", true, FCVAR.CLIENT)               -- false = toggle crouch
 Define("mv_walkKeyToggle", false, FCVAR.CLIENT)           -- false = hold to walk
+-- Per-weapon movement speed (CS:GO MaxPlayerSpeed). Each weapon module may
+-- carry maxPlayerSpeed in studs/second; the held weapon's value becomes a
+-- ratio of mv_walkSpeed and scales every stance with it. A knife runs at the
+-- full 250 units, a rifle at 215, a Negev at 150 -- which is what makes
+-- switching to the knife to rotate an actual decision. Off = every weapon
+-- moves at mv_walkSpeed.
+Define("mv_weaponSpeed", true, FCVAR.REPLICATED)
+
 Define("mv_canWalk", true, FCVAR.REPLICATED)
 Define("mv_canProne", false, FCVAR.REPLICATED)
 Define("mv_canDive", false, FCVAR.REPLICATED)

@@ -653,6 +653,27 @@ function Physics.Step(deltaTime)
 		targetSpeed = Config.mv_walkKeySpeed
 	end
 
+	-- Per-weapon speed. CS:GO gives every weapon its own MaxPlayerSpeed, and
+	-- the held one sets the player's: knife 250 units, rifle 215, Negev 150.
+	--
+	-- Applied as a RATIO of mv_walkSpeed rather than replacing targetSpeed
+	-- outright, so crouch, walk-key and prone all scale with the weapon --
+	-- CS:GO derives those from the weapon's max too, so crouch-walking with a
+	-- Negev is slower than crouch-walking with a knife. Substituting the
+	-- absolute would have made every stance identical the moment you ducked.
+	--
+	-- Empty hands read as no penalty, which is also what CS:GO does.
+	State.weaponSpeedScale = 1
+	if Config.mv_weaponSpeed ~= false then
+		local stats = State.currentWeaponStats
+		local weaponMax = stats and stats.maxPlayerSpeed
+		local base = Config.mv_walkSpeed
+		if type(weaponMax) == "number" and weaponMax > 0 and base and base > 0 then
+			State.weaponSpeedScale = weaponMax / base
+			targetSpeed = targetSpeed * State.weaponSpeedScale
+		end
+	end
+
 	--------------------------------------------------------------
 	-- 2. DEPENETRATE
 	--------------------------------------------------------------

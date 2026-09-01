@@ -7,6 +7,12 @@ return {
 	-- that fits wherever it is put. Give/primary/secondary/melee all refuse
 	-- a slot this forbids, so a pistol can never end up in the rifle slot.
 	slot = "melee",
+
+	-- Movement speed while this is the ACTIVE weapon, in studs/second.
+	-- CS:GO's MaxPlayerSpeed of 250 units -- the fastest thing you can hold, which is the point of switching to it.
+	-- Applied as a ratio of mv_walkSpeed, so crouch and walk-key speeds
+	-- scale with it. Omit the field for no penalty at all.
+	maxPlayerSpeed = 22.73,
 	isAuto = true,
 	fireRate = 150,
 	magSize = math.huge,
