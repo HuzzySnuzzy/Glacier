@@ -494,9 +494,26 @@ function Glacier.BodyOf(entity, kind)
 	return entity   -- a bot model is its own body
 end
 
+-- The Puppet, not the RawBody, is where a player actually IS as far as the
+-- server is concerned.
+--
+-- Physics writes body.CFrame every step, but it does so on the CLIENT, and the
+-- RawBody is an anchored, server-owned part -- those writes are local and never
+-- replicate. On the server the hull therefore sits at the spawn point for the
+-- whole round. The Puppet is the half that is synced (PuppetSync carries the
+-- same CFrame Visuals copied off the body), so it is the only live answer.
+--
+-- Preferred on the SERVER only: on the owning client the local body is exact,
+-- while remote puppets are interpolated for rendering.
 function Glacier.PositionOf(entity, kind)
 	local body = Glacier.BodyOf(entity, kind)
 	if not body or not body.Parent then return nil end
+
+	if IS_SERVER then
+		local puppet = body:IsA("Model") and body or body:FindFirstChild("Puppet")
+		local root = puppet and puppet.PrimaryPart
+		if root then return root.Position end
+	end
 
 	if body:IsA("BasePart") then return body.Position end
 	if body:IsA("Model") then

@@ -89,6 +89,9 @@ return {
 	-- Set by Input on a keypress, consumed by Weapons, which fires the remote.
 	dropRequested = false,
 	useRequested = false,
+
+	-- CS:GO jump fatigue. Only read when mv_stamina is on; 0 is "rested".
+	stamina = 0,
 	nextFireTime = 0,
 	reloadEndTime = 0,
 	equipEndTime = 0,

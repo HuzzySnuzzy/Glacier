@@ -179,6 +179,30 @@ Define("mv_sgsGraceTime", 0.15, FCVAR.REPLICATED + FCVAR.CHEAT)        -- how lo
 Define("mv_strafeAssist", 0, FCVAR.REPLICATED + FCVAR.CHEAT)
 
 --=====================================================================
+-- CS:GO JUMP LIMITS  (stamina, PreventBunnyJumping)
+--=====================================================================
+-- The two things CS:GO added on top of GoldSrc movement, and the reason
+-- bunnyhopping does not work there. BOTH SHIP OFF: this engine's surf, ABH
+-- and ground-strafe tech all assume a jump you can repeat, and turning either
+-- of these on by default would quietly undo work that has been tuned around
+-- their absence. Turn them on for CS:GO-accurate movement.
+--
+-- Modelled on CS:GO's behaviour and named after its cvars. The costs are
+-- expressed as a FRACTION of sv_staminamax, and recovery in stamina per
+-- second; CS:GO's internal float scaling is not reproduced exactly.
+
+Define("mv_stamina", false, FCVAR.REPLICATED + FCVAR.CHEAT)  -- master toggle
+Define("sv_staminamax", 80, FCVAR.REPLICATED + FCVAR.CHEAT)
+Define("sv_staminajumpcost", 0.08, FCVAR.REPLICATED + FCVAR.CHEAT)   -- per jump
+Define("sv_staminalandcost", 0.05, FCVAR.REPLICATED + FCVAR.CHEAT)   -- per landing
+Define("sv_staminarecoveryrate", 60, FCVAR.REPLICATED + FCVAR.CHEAT) -- per second
+
+-- CS:GO's PreventBunnyJumping: horizontal speed is clamped to this multiple of
+-- your max speed at the moment you jump, which is what stops a chain of hops
+-- compounding. 1.2 is CS:GO's number; 0 disables the clamp entirely.
+Define("mv_bunnyJumpCap", 0, FCVAR.REPLICATED + FCVAR.CHEAT)
+
+--=====================================================================
 -- SERVER / TICKRATE
 --=====================================================================
 

@@ -704,6 +704,14 @@ function Physics.Step(deltaTime)
 		ViewBob.Punch(-math.abs(vel.Y) * 0.35, 0)
 		ViewSway.Land(vel.Y)
 		State.dbgJumpHeight = 0
+
+		-- CS:GO charges stamina for the landing as well as the jump, which is
+		-- what makes a chain of hops decay rather than just the second one.
+		if Config.mv_stamina then
+			local maxStamina = Config.sv_staminamax or 80
+			State.stamina = math.min(maxStamina,
+				(State.stamina or 0) + (Config.sv_staminalandcost or 0) * maxStamina)
+		end
 	end
 
 	--------------------------------------------------------------
@@ -723,6 +731,13 @@ function Physics.Step(deltaTime)
 	end
 	State.jumpBufferTimer = math.max((State.jumpBufferTimer or 0) - deltaTime, 0)
 	State.ladderTimeout = math.max((State.ladderTimeout or 0) - deltaTime, 0)
+
+	-- CS:GO recovers stamina in ReduceTimers, which runs every tick whether
+	-- you are on the ground or not.
+	if (State.stamina or 0) > 0 then
+		State.stamina = math.max(0,
+			State.stamina - (Config.sv_staminarecoveryrate or 60) * deltaTime)
+	end
 
 	-- Grace window after a duck-lift ends, used to soften friction so the
 	-- grounded ticks between scroll notches don't eat the whole gain.
@@ -751,7 +766,32 @@ function Physics.Step(deltaTime)
 			and Sweep(pos, hullSize, Vector3.new(0, needed, 0), params) ~= nil
 
 		if not blocked then
-			vel = Vector3.new(vel.X, Config.mv_jumpForce, vel.Z)
+			-- CS:GO PreventBunnyJumping, which runs BEFORE the jump velocity
+			-- is applied and so only ever touches horizontal speed. This is
+			-- the whole reason hops do not compound in CS:GO.
+			local hopCap = Config.mv_bunnyJumpCap or 0
+			if hopCap > 0 then
+				local maxScaled = hopCap * targetSpeed
+				local flat = Vector3.new(vel.X, 0, vel.Z)
+				if maxScaled > 0 and flat.Magnitude > maxScaled then
+					local scaled = flat.Unit * maxScaled
+					vel = Vector3.new(scaled.X, vel.Y, scaled.Z)
+				end
+			end
+
+			-- Jump fatigue: each hop leaves less in the legs for the next.
+			local jumpSpeed = Config.mv_jumpForce
+			if Config.mv_stamina then
+				local maxStamina = Config.sv_staminamax or 80
+				local stamina = math.clamp(State.stamina or 0, 0, maxStamina)
+				if maxStamina > 0 then
+					jumpSpeed = jumpSpeed * ((maxStamina - stamina) / maxStamina)
+				end
+				State.stamina = math.min(maxStamina,
+					stamina + (Config.sv_staminajumpcost or 0) * maxStamina)
+			end
+
+			vel = Vector3.new(vel.X, jumpSpeed, vel.Z)
 
 			if not keepCrouched then
 				State.isCrouching = false
@@ -870,6 +910,27 @@ function Physics.Step(deltaTime)
 	local horizontalVel = Vector3.new(vel.X, 0, vel.Z)
 	local verticalVel = vel.Y
 
+	-- Source splits gravity across the move: StartGravity takes half BEFORE
+	-- FlyMove, FinishGravity the other half after (PM_PlayerMove ->
+	-- FullWalkMove). Not a rounding detail -- it is Euler versus the
+	-- trapezoid rule, and it is what makes jump apex land on v^2/2g at ANY
+	-- tickrate. Measured against the analytic 4.0946 studs for mv_jumpForce
+	-- 24.4 / mv_gravity 72.7:
+	--
+	--   all up front (what this was)   240Hz 4.0440   100Hz 3.9735   64Hz 3.9062
+	--   split                          240Hz 4.0945   100Hz 4.0939   64Hz 4.0926
+	--
+	-- so the old scheme was not only short of the height Config documents, it
+	-- was short by a different amount at every sv_PhysicsHz.
+	--
+	-- ONE DELIBERATE DEVIATION: Source assigns the jump velocity AFTER
+	-- StartGravity, so a jump tick discards that first half. Reproducing that
+	-- overshoots the apex by exactly as much as the old scheme undershot it
+	-- (4.1456 at 240Hz). The jump here happens in section 5, above, so the
+	-- half is applied to it and the apex comes out right. Fidelity to the
+	-- number beats fidelity to the statement order.
+	local pendingGravity = 0
+
 	if State.onLadder then
 		-- Ladder velocity was set outright in 5b: no gravity, no friction, no
 		-- acceleration. PM_Ladder switches movetype to fly for exactly this.
@@ -949,13 +1010,19 @@ function Physics.Step(deltaTime)
 
 			local wish = AssistWishDir(State.wishDir, horizontalVel, targetSpeed, deltaTime, cap)
 
+			-- Source scales air acceleration by m_surfaceFriction as well as
+			-- ground acceleration, and deliberately keeps the last grounded
+			-- value while airborne -- which is why a jump off ice air-strafes
+			-- worse than one off concrete.
 			horizontalVel = Math.QuakeAirAccelerate(
 				horizontalVel, wish, targetSpeed,
-				Config.mv_airAcceleration, deltaTime, cap
+				Config.mv_airAcceleration * (State.surfaceFriction or 1), deltaTime, cap
 			)
 		end
 
-		verticalVel = verticalVel - (Config.mv_gravity * deltaTime)
+		-- First half now; FinishGravity below pays the rest after the move.
+		pendingGravity = Config.mv_gravity * deltaTime * 0.5
+		verticalVel = verticalVel - pendingGravity
 		verticalVel = math.max(verticalVel, -(Config.mv_maxFallSpeed or 181))
 	end
 
@@ -967,6 +1034,13 @@ function Physics.Step(deltaTime)
 	end
 
 	vel = Vector3.new(horizontalVel.X, verticalVel, horizontalVel.Z)
+
+	-- PM_CheckVelocity also rejects NaN, and for a reason worth keeping: one
+	-- NaN component propagates through every later frame and the player is
+	-- stuck for good, with no error and nothing in the log to explain it.
+	if vel ~= vel then
+		vel = Vector3.zero
+	end
 
 	-- sv_maxvelocity: Source clamps each AXIS independently, not the magnitude.
 	-- That's a different shape of clamp -- a diagonal can reach cap * sqrt(2).
@@ -995,6 +1069,15 @@ function Physics.Step(deltaTime)
 	end
 
 	pos, vel = MoveWithStep(pos, vel, hullSize, deltaTime, params, op, maxStep)
+
+	-- FinishGravity: the second half, after the move, where Source puts it.
+	-- Skipped entirely when the tick was grounded or on a ladder, since
+	-- pendingGravity is only ever set by the airborne branch.
+	if pendingGravity > 0 then
+		vel = Vector3.new(vel.X,
+			math.max(vel.Y - pendingGravity, -(Config.mv_maxFallSpeed or 181)),
+			vel.Z)
+	end
 
 	-- Belt and braces with noUp: walking never launches upward, and
 	-- ground-stick below needs vel.Y <= 0 to run.
