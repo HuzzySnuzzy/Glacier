@@ -32,6 +32,11 @@ local Bullets = require(script.Parent.Bullets)
 local Inventory = require(ReplicatedStorage:WaitForChild("Inventory"))
 
 local ReloadWeapon = ReplicatedStorage:WaitForChild("ReloadWeapon", 10)
+local DropWeapon   = ReplicatedStorage:WaitForChild("DropWeapon", 10)
+local PickupWeapon = ReplicatedStorage:WaitForChild("PickupWeapon", 10)
+-- Same remote Player.luau listens on for the server's pushes; this is the
+-- reverse direction, carrying nothing but which slot is equipped.
+local InventorySync = ReplicatedStorage:WaitForChild("InventorySync", 10)
 
 local Weapons = {}
 
@@ -249,12 +254,46 @@ end
 -- UPDATE
 --=====================================================================
 
+-- Which slot is EQUIPPED is decided here on the client (Input writes it on a
+-- keypress), and the server needs it to know where `give` should land and what
+-- `drop` should throw. Reported on change only -- it is one small packet per
+-- weapon swap, not per frame.
+local lastReportedSlot
+
+local function reportActiveSlot()
+	local slot = State.activeSlot
+	if slot == lastReportedSlot then return end
+	lastReportedSlot = slot
+	if InventorySync then
+		InventorySync:FireServer({ activeSlot = slot })
+	end
+end
+
+-- Drop and pickup are inventory changes, so the SERVER performs them: this
+-- only asks. Both are consumed before the no-weapon early return below --
+-- picking a rifle up off the floor is exactly what you do with empty hands.
+local function serviceInventoryRequests()
+	reportActiveSlot()
+
+	if State.dropRequested then
+		State.dropRequested = false
+		if DropWeapon then DropWeapon:FireServer(State.activeSlot) end
+	end
+
+	if State.useRequested then
+		State.useRequested = false
+		if PickupWeapon then PickupWeapon:FireServer() end
+	end
+end
+
 function Weapons.Update()
 	local s = stats()
 
 	local triggerDown = State.triggerDown == true
 	local pressedThisFrame = triggerDown and not lastTriggerDown
 	lastTriggerDown = triggerDown
+
+	serviceInventoryRequests()
 
 	if not s then
 		State.reloadRequested = false

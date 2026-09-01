@@ -86,6 +86,9 @@ return {
 	triggerDown = false,
 	reloadRequested = false,
 	inspectRequested = false,
+	-- Set by Input on a keypress, consumed by Weapons, which fires the remote.
+	dropRequested = false,
+	useRequested = false,
 	nextFireTime = 0,
 	reloadEndTime = 0,
 	equipEndTime = 0,

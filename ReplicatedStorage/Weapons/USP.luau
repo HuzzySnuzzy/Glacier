@@ -1,6 +1,12 @@
 local Name = "USP"
 return {
 	name = Name,
+
+	-- Which inventory slot this weapon may occupy: "primary", "secondary",
+	-- "melee", or "any" (also the meaning of leaving it out) for a weapon
+	-- that fits wherever it is put. Give/primary/secondary/melee all refuse
+	-- a slot this forbids, so a pistol can never end up in the rifle slot.
+	slot = "secondary",
 	isAuto = false,
 	fireRate = 400,
 	magSize = 12,

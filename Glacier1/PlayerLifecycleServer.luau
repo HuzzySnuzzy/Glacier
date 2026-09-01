@@ -387,17 +387,91 @@ function Lifecycle_API.GiveLoadout(plr, spec)
 	return true
 end
 
--- Single slot, for buy menus and pickups.
+-- Single slot, for buy menus, console commands and pickups. ONLY that slot is
+-- touched -- this is the difference from GiveLoadout, which is a complete
+-- statement of what the player carries and clears everything it isn't given.
+--
+-- slot is what the caller WANTS. A weapon with a designated slot overrides it
+-- (and refuses outright if the caller explicitly asked for a different one);
+-- a weapon that fits anywhere lands in the caller's slot, defaulting to the
+-- player's active one so `give` swaps what you're holding.
+--
+-- Returns ok, slotUsed | reason.
 function Lifecycle_API.GiveWeapon(plr, class, opts, slot)
 	local inv = inventoryFor(plr)
-	slot = slot or Inventory.SlotFor(class)
-	if not slot then return false, "unknown weapon: " .. tostring(class) end
 
-	if not Inventory.Give(inv, slot, class, opts) then
+	local target, reason
+	if slot ~= nil then
+		-- An explicitly named slot is a DEMAND: the caller said secondary, so
+		-- a rifle is refused rather than quietly redirected to slot 1.
+		target = Inventory.SlotIndex(slot)
+		if not target then return false, ("no such slot: " .. tostring(slot)) end
+
+		local allowed, why = Inventory.CanUseSlot(class, target)
+		if not allowed then return false, why end
+	else
+		-- Nothing named: the active slot is a hint, and the weapon's own
+		-- designated slot outranks it.
+		target, reason = Inventory.SlotFor(class, inv.activeSlot)
+		if not target then return false, reason end
+	end
+
+	if not Inventory.Give(inv, target, class, opts) then
 		return false, "could not create " .. tostring(class)
 	end
 	pushInventory(plr)
+	return true, target
+end
+
+-- Empty one slot and hand back what was in it, ammo counts intact -- which is
+-- what makes a drop able to keep the magazine it was on.
+function Lifecycle_API.TakeSlot(plr, slot)
+	local inv = inventories[plr]
+	if not inv then return nil end
+
+	slot = Inventory.SlotIndex(slot)
+	if not slot then return nil end
+
+	local item = Inventory.Clear(inv, slot)
+	if not item then return nil end
+
+	-- Fall back to whatever the player still has, or they are left holding an
+	-- empty slot with no way to notice except the missing viewmodel.
+	if inv.activeSlot == slot then
+		for i = 1, Inventory.SLOT_COUNT do
+			if Inventory.Get(inv, i) then inv.activeSlot = i break end
+		end
+	end
+
+	pushInventory(plr)
+	return item
+end
+
+function Lifecycle_API.ClearSlot(plr, slot)
+	return Lifecycle_API.TakeSlot(plr, slot) ~= nil
+end
+
+function Lifecycle_API.GetSlot(plr, slot)
+	local inv = inventories[plr]
+	slot = Inventory.SlotIndex(slot)
+	return (inv and slot) and Inventory.Get(inv, slot) or nil
+end
+
+-- The client owns which slot is EQUIPPED (Input writes State.activeSlot on a
+-- keypress and nothing told the server), so it reports the change back here.
+-- Trusting it is safe: the only thing a lying client changes is which of its
+-- OWN slots a give or a drop lands on.
+function Lifecycle_API.SetActiveSlot(plr, slot)
+	local inv = inventories[plr]
+	slot = Inventory.SlotIndex(slot)
+	if not (inv and slot) then return false end
+	inv.activeSlot = slot
 	return true
+end
+
+function Lifecycle_API.ActiveSlot(plr)
+	local inv = inventories[plr]
+	return inv and inv.activeSlot or Inventory.SLOT_PRIMARY
 end
 
 -- Read-only handle for WeaponServer: validate a FireWeapon packet's weapon
@@ -406,6 +480,15 @@ end
 function Lifecycle_API.GetInventory(plr)
 	return inventories[plr]
 end
+
+-- Reusing InventorySync rather than minting a second remote: it already
+-- carries inventory state, it's just been one-directional until now.
+InventorySync.OnServerEvent:Connect(function(plr, packet)
+	if type(packet) ~= "table" then return end
+	if packet.activeSlot ~= nil then
+		Lifecycle_API.SetActiveSlot(plr, packet.activeSlot)
+	end
+end)
 
 function Lifecycle_API.HeldClass(plr)
 	local inv = inventories[plr]

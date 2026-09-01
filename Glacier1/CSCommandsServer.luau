@@ -25,8 +25,9 @@
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local Config  = require(ReplicatedStorage:WaitForChild("Config"))
-local Glacier = require(ReplicatedStorage:WaitForChild("Glacier"))
+local Config    = require(ReplicatedStorage:WaitForChild("Config"))
+local Glacier   = require(ReplicatedStorage:WaitForChild("Glacier"))
+local Inventory = require(ReplicatedStorage:WaitForChild("Inventory"))
 
 local FCVAR      = Config.FCVAR
 local SERVER     = FCVAR.REPLICATED
@@ -134,9 +135,12 @@ local function giveTo(plr, raw)
 		return false, ("no weapon or item named '%s'"):format(raw)
 	end
 
-	local ok, reason = Glacier.GiveWeapon(plr, class)
-	if not ok then return false, reason end
-	return true, class
+	-- No slot is passed, so GiveWeapon uses the weapon's designated slot if it
+	-- has one and the player's ACTIVE slot if it doesn't -- give swaps what
+	-- you're holding, and never touches the slots you aren't.
+	local ok, result = Glacier.GiveWeapon(plr, class)
+	if not ok then return false, result end
+	return true, ("%s (%s)"):format(class, Inventory.SlotName(result))
 end
 
 Config.Command("give", {

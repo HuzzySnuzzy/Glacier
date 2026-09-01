@@ -331,6 +331,26 @@ Define("weapon_recoil_view_ratio", 1, FCVAR.REPLICATED)
 Define("cl_spray_debug", false, FCVAR.CLIENT + FCVAR.CHEAT)
 
 --=====================================================================
+-- DROP / PICKUP
+--=====================================================================
+-- REPLICATED throughout: the server owns every inventory change, and the
+-- client only needs these to decide whether to show a prompt.
+
+Define("sv_dropWeapons", true, FCVAR.REPLICATED)    -- master toggle for dropping
+Define("sv_dropForce", 22, FCVAR.REPLICATED)        -- studs/s of forward toss
+Define("sv_dropUpForce", 7, FCVAR.REPLICATED)       -- studs/s of lift, so it arcs
+Define("sv_dropSpin", 6, FCVAR.REPLICATED)          -- rad/s of tumble; 0 = none
+Define("sv_dropOnDeath", true, FCVAR.REPLICATED)    -- a corpse leaves its weapon behind
+Define("sv_dropMelee", false, FCVAR.REPLICATED)     -- CS won't let you drop the knife
+
+Define("sv_pickupRange", 8, FCVAR.REPLICATED)       -- studs from the body to +use
+Define("sv_pickupAuto", false, FCVAR.REPLICATED)    -- walk-over pickup into an EMPTY slot
+Define("sv_pickupAutoRange", 4, FCVAR.REPLICATED)   -- tighter: you must walk onto it
+Define("sv_pickupOwnerDelay", 1, FCVAR.REPLICATED)  -- seconds before you can re-grab your own drop
+Define("sv_pickupLifetime", 90, FCVAR.REPLICATED)   -- seconds before a drop despawns; 0 = never
+Define("sv_pickupMax", 40, FCVAR.REPLICATED)        -- oldest is culled past this; 0 = unlimited
+
+--=====================================================================
 -- CROSSHAIR  (CS 1.6 cvar names)
 --=====================================================================
 

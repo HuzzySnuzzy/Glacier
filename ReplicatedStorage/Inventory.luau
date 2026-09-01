@@ -105,11 +105,88 @@ function Inventory.Give(state, slot, name, opts)
 	return Inventory.Set(state, slot, item)
 end
 
--- Which slot a class belongs in, so pickup doesn't need the caller to know.
-function Inventory.SlotFor(name)
+--=====================================================================
+-- SLOT RULES
+--=====================================================================
+-- A weapon module declares `slot = "primary" | "secondary" | "melee"`, or
+-- "any" (equivalently: leaves the field out) when it fits anywhere. A weapon
+-- with a designated slot can ONLY go there -- `primary glock` is refused
+-- rather than quietly parked in the rifle slot.
+--
+-- Numbers are accepted too, so a module can say slot = 2 if it prefers.
+
+Inventory.SLOT_NAMES = {
+	[Inventory.SLOT_PRIMARY]   = "primary",
+	[Inventory.SLOT_SECONDARY] = "secondary",
+	[Inventory.SLOT_MELEE]     = "melee",
+}
+
+local NAME_TO_SLOT = {
+	primary = Inventory.SLOT_PRIMARY,
+	secondary = Inventory.SLOT_SECONDARY,
+	pistol = Inventory.SLOT_SECONDARY,
+	melee = Inventory.SLOT_MELEE,
+	knife = Inventory.SLOT_MELEE,
+}
+
+-- "secondary" | 2 | "2" -> 2. Anything else (including "any" and nil) -> nil.
+function Inventory.SlotIndex(value)
+	if type(value) == "number" then
+		local i = math.floor(value)
+		return (i >= 1 and i <= Inventory.SLOT_COUNT) and i or nil
+	end
+	if type(value) ~= "string" then return nil end
+
+	local lower = string.lower(value)
+	if lower == "any" or lower == "" then return nil end
+
+	local numeric = tonumber(lower)
+	if numeric then return Inventory.SlotIndex(numeric) end
+	return NAME_TO_SLOT[lower]
+end
+
+function Inventory.SlotName(slot)
+	return Inventory.SLOT_NAMES[slot] or ("slot " .. tostring(slot))
+end
+
+-- The slot a class is LOCKED to, or nil when it may go anywhere. nil is
+-- returned for an unknown class as well; callers resolve the class first.
+function Inventory.DesignatedSlot(name)
 	local _, stats = WeaponRegistry.Resolve(name)
 	if not stats then return nil end
-	return stats.slot or Inventory.SLOT_PRIMARY
+	return Inventory.SlotIndex(stats.slot)
+end
+
+-- Returns ok, reason. The reason names both slots, since "can't do that" on a
+-- console leaves you guessing which end was wrong.
+function Inventory.CanUseSlot(name, slot)
+	local designated = Inventory.DesignatedSlot(name)
+	if not designated or designated == slot then return true end
+
+	local class = WeaponRegistry.Class(name) or name
+	return false, ("%s only fits the %s slot, not %s")
+		:format(tostring(class), Inventory.SlotName(designated), Inventory.SlotName(slot))
+end
+
+-- Which slot a class belongs in, so pickup doesn't need the caller to know.
+--
+-- `hint` is a PREFERENCE, not a demand -- typically the player's active slot,
+-- so `give` swaps what you're holding. A designated slot always wins over it:
+-- `give glock` while holding a rifle means "put this pistol where pistols go",
+-- not "refuse, because you're holding the rifle".
+--
+-- A caller stating a slot it actually requires (the primary/secondary/melee
+-- commands) validates with CanUseSlot first -- that is the demand, and it is
+-- the one that errors on a mismatch.
+--
+-- Returns slot | nil, reason.
+function Inventory.SlotFor(name, hint)
+	local _, stats = WeaponRegistry.Resolve(name)
+	if not stats then return nil, ("unknown weapon: " .. tostring(name)) end
+
+	return Inventory.SlotIndex(stats.slot)
+		or Inventory.SlotIndex(hint)
+		or Inventory.SLOT_PRIMARY
 end
 --=====================================================================
 -- LOADOUTS

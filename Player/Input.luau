@@ -167,6 +167,12 @@ local COMMANDS = {
 	-- Must survive modal or the console can be opened and never closed.
 	["toggleconsole"] = { order = 17, label = "Console", button = false, modalPassthrough = true },
 	["+lookatweapon"] = { order = 18, label = "Inspect", button = true },
+
+	-- Held rather than one-shot: +use is the slot for anything you hold to
+	-- interact with later (a hostage, a bomb), and Weapons only reads the
+	-- press edge for now.
+	["+use"]  = { order = 19, label = "Use / Pick Up",  button = true },
+	["drop"]  = { order = 20, label = "Drop Weapon",    button = false },
 }
 
 -- Ordered so bind_defaults and a fresh config write out predictably.
@@ -177,6 +183,7 @@ local DEFAULT_BINDS = {
 	{ "mouse1", "+attack" }, { "mouse2", "+attack2" }, { "r", "+reload" },
 	{ "1", "slot1" }, { "2", "slot2" }, { "3", "slot3" },
 	{ "v", "thirdperson" }, { "f3", "toggleconsole" }, { "f", "+lookatweapon" },
+	{ "e", "+use" }, { "g", "drop" },
 }
 
 local GAMEPAD_DEFAULTS = {
@@ -277,6 +284,13 @@ local function applyPressInner(name)
 	elseif name == "slot1" then State.activeSlot = 1
 	elseif name == "slot2" then State.activeSlot = 2
 	elseif name == "slot3" then State.activeSlot = 3
+
+	elseif name == "+use" then
+		-- Consumed by Weapons, which owns the remote. Input stays free of
+		-- anything that talks to the server.
+		State.useRequested = true
+	elseif name == "drop" then
+		State.dropRequested = true
 
 	elseif name == "thirdperson" then
 		State.isThirdPerson = not State.isThirdPerson

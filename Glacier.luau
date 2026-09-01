@@ -426,6 +426,15 @@ function Glacier.HeldClass(plr)
 	return lifecycle().HeldClass(plr)
 end
 
+-- Single-slot inventory. GiveWeapon returns ok, slotUsed | reason; TakeSlot
+-- hands back the item it removed (ammo counts intact) so a drop can put the
+-- same magazine into the world.
+function Glacier.TakeSlot(plr, slot)      return lifecycle().TakeSlot(plr, slot) end
+function Glacier.ClearSlot(plr, slot)     return lifecycle().ClearSlot(plr, slot) end
+function Glacier.GetSlot(plr, slot)       return lifecycle().GetSlot(plr, slot) end
+function Glacier.ActiveSlot(plr)          return lifecycle().ActiveSlot(plr) end
+function Glacier.SetActiveSlot(plr, slot) return lifecycle().SetActiveSlot(plr, slot) end
+
 -- BindableFunctions rather than events, because the caller needs a value back.
 -- Returns cframe, part | nil, nil, reason.
 function Glacier.GetSpawnPoint(entity, teamOverride)
