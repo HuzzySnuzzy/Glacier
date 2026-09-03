@@ -241,6 +241,7 @@ local function Depenetrate(pos, size, op)
 	local candidates = GatherCandidates(pos, size, op)
 	if #candidates == 0 then return pos end
 
+	local pushes = 0
 	for _ = 1, 4 do
 		local moved = false
 		for _, part in ipairs(candidates) do
@@ -249,13 +250,14 @@ local function Depenetrate(pos, size, op)
 				if axis and depth > DEPEN_EPS then
 					pos = pos + axis * (depth + DEPEN_EPS)
 					moved = true
+					pushes += 1
 				end
 			end
 		end
 		if not moved then break end
 	end
 
-	return pos
+	return pos, pushes
 end
 
 --=====================================================================
@@ -265,10 +267,13 @@ end
 -- noUp: while grounded, never let a clip produce upward velocity. Clipping a
 -- flat vector against a slope yields +Y, which launches us off ramps.
 -- Step-up owns climbing.
+-- Returns pos, vel, blocked, blockNormal. The normal is the first surface that
+-- actually stopped progress; the caller needs it to tell a wall from a ramp.
 local function MoveAndSlide(pos, vel, size, dt, params, noUp)
 	local remaining = dt
 	local planes = {}
 	local blocked = false
+	local blockNormal = nil
 	local overbounce = Config.mv_surfOverbounce or 1.0
 	local boostFix = Config.mv_slopeBoostFix
 
@@ -284,6 +289,7 @@ local function MoveAndSlide(pos, vel, size, dt, params, noUp)
 		end
 
 		blocked = true
+		if not blockNormal then blockNormal = hit.Normal end
 
 		local travel = math.max(hit.Distance - SKIN, 0)
 		pos = pos + vel.Unit * travel
@@ -348,7 +354,7 @@ local function MoveAndSlide(pos, vel, size, dt, params, noUp)
 		end
 	end
 
-	return pos, vel, blocked
+	return pos, vel, blocked, blockNormal
 end
 
 --=====================================================================
@@ -359,12 +365,41 @@ end
 -- whichever got further horizontally. This is also how ramps are climbed --
 -- velocity stays flat and the step machinery ascends, so horizontal speed is
 -- never reduced by the slope angle.
-local function MoveWithStep(pos, vel, size, dt, params, op, maxStep)
-	local noUp = maxStep > 0 -- only true while grounded
-	local flatPos, flatVel, blocked = MoveAndSlide(pos, vel, size, dt, params, noUp)
+--
+-- AIRBORNE STEPPING. Source only steps in WalkMove, so a lip an inch high
+-- stops a bhop dead and a seam between two surf brushes ends the run. Stepping
+-- is allowed in the air here, under different rules, because a player in the
+-- air has nothing to stand on and needs nothing to stand on -- see the two
+-- branches below.
+--
+-- `grounded` is passed SEPARATELY from maxStep. It used to be inferred
+-- (noUp = maxStep > 0), which quietly made the two the same thing: switching
+-- air-stepping on that way would also switch noUp on, and noUp exists to
+-- suppress exactly the +Y that clipping against a ramp produces. That is surf.
+local function MoveWithStep(pos, vel, size, dt, params, op, maxStep, grounded)
+	local noUp = grounded
+	local flatPos, flatVel, blocked, blockNormal = MoveAndSlide(pos, vel, size, dt, params, noUp)
 
 	if not blocked or maxStep <= 0 then
 		return flatPos, flatVel
+	end
+
+	-- AIRBORNE: only step over near-VERTICAL faces.
+	--
+	-- Without this the feature eats surf. A ramp does not obstruct the lifted
+	-- move, so the lifted move travels further, wins the comparison below, and
+	-- is taken -- which means hopping OVER the ramp instead of clipping along
+	-- it, and the clip is the entire mechanism that converts a fall into
+	-- speed. The player sails past the ramp still falling at -40.
+	--
+	-- A lip and a ramp are told apart the only way they can be: by how steep
+	-- the thing that stopped you is. Near-vertical is a face to get over,
+	-- anything flatter is a surface to slide on.
+	if not grounded and blockNormal then
+		local limit = Config.mv_airStepMaxNormalY or 0.3
+		if math.abs(blockNormal.Y) > limit then
+			return flatPos, flatVel
+		end
 	end
 
 	local upHit = Sweep(pos, size, Vector3.new(0, maxStep, 0), params)
@@ -380,10 +415,25 @@ local function MoveWithStep(pos, vel, size, dt, params, op, maxStep)
 	local acrossPos, acrossVel = MoveAndSlide(stepPos, vel, size, dt, params, noUp)
 
 	local downHit = Sweep(acrossPos, size, Vector3.new(0, -(upDist + 0.1), 0), params)
-	if not downHit or downHit.Normal.Y < GROUND_NORMAL_Y then
-		return flatPos, flatVel
+
+	if grounded then
+		-- On the ground a step is only a step if it ends somewhere you can
+		-- stand: landing on a 60-degree face is a slide, not a stair.
+		if not downHit or downHit.Normal.Y < GROUND_NORMAL_Y then
+			return flatPos, flatVel
+		end
+		acrossPos = acrossPos + Vector3.new(0, -math.max(downHit.Distance - SKIN, 0), 0)
+	else
+		-- Airborne there is nothing to land on and nothing to require, so the
+		-- walkable test is dropped -- requiring it is what would leave a surf
+		-- ramp's seams (steep on both sides) still blocking.
+		--
+		-- The lift is handed back in full when the sweep finds nothing beneath,
+		-- so clearing a lip never grants free height. The only thing kept is
+		-- horizontal progress, which is the entire point.
+		local drop = downHit and math.max(downHit.Distance - SKIN, 0) or upDist
+		acrossPos = acrossPos + Vector3.new(0, -math.min(drop, upDist), 0)
 	end
-	acrossPos = acrossPos + Vector3.new(0, -math.max(downHit.Distance - SKIN, 0), 0)
 
 	-- The drop only checks the column beneath acrossPos, not what we straddle.
 	if IsOccupied(acrossPos, size, op) then return flatPos, flatVel end
@@ -391,10 +441,23 @@ local function MoveWithStep(pos, vel, size, dt, params, op, maxStep)
 	local flatGain = (Vector3.new(flatPos.X, 0, flatPos.Z) - Vector3.new(pos.X, 0, pos.Z)).Magnitude
 	local stepGain = (Vector3.new(acrossPos.X, 0, acrossPos.Z) - Vector3.new(pos.X, 0, pos.Z)).Magnitude
 
+	-- Only keep the lift if it actually bought horizontal distance. This is
+	-- also the whole anti-climbing argument for air-stepping: pressed against
+	-- a flat wall the lifted move is blocked by the same wall, gains nothing,
+	-- and is discarded -- so a player cannot ratchet up a surface a step per
+	-- tick. Geometry that yields distance for a small lift is, by definition,
+	-- a ledge rather than a wall.
 	if stepGain > flatGain then
-		State.stepUpCount = (State.stepUpCount or 0) + 1
-		-- Stepping up is a position change, not an upward launch.
-		return acrossPos, Vector3.new(acrossVel.X, math.min(acrossVel.Y, 0), acrossVel.Z)
+		if grounded then
+			State.stepUpCount = (State.stepUpCount or 0) + 1
+			-- Stepping up is a position change, not an upward launch.
+			return acrossPos, Vector3.new(acrossVel.X, math.min(acrossVel.Y, 0), acrossVel.Z)
+		end
+
+		State.airStepCount = (State.airStepCount or 0) + 1
+		-- Vertical velocity is left alone in the air. Applying the grounded
+		-- clamp would eat the rise out of a jump and flatten a surf climb.
+		return acrossPos, acrossVel
 	end
 
 	return flatPos, flatVel
@@ -679,10 +742,11 @@ function Physics.Step(deltaTime)
 	--------------------------------------------------------------
 	-- Published per tick, not accumulated: a nonzero value means the hull is
 	-- inside geometry RIGHT NOW, which is the diagnostic you want.
+	-- Ran twice, and the count came back nil both times because Depenetrate
+	-- only ever returned a position. One pass, and the diagnostic works.
 	local depenPushes
 	pos, depenPushes = Depenetrate(pos, hullSize, op)
 	State.depenCount = depenPushes
-	pos = Depenetrate(pos, hullSize, op)
 
 	--------------------------------------------------------------
 	-- 3. GROUND DETECTION
@@ -1077,8 +1141,10 @@ function Physics.Step(deltaTime)
 	--------------------------------------------------------------
 	-- 7. MOVE
 	--------------------------------------------------------------
+	local grounded = State.isGrounded and not State.onLadder
 	local maxStep = 0
-	if State.isGrounded and not State.onLadder then
+
+	if grounded then
 		maxStep = Config.mv_maxStepHeight * bodyScale
 		if Config.mv_scaleStepWithSpeed then
 			-- Step-up climbs at most maxStep per tick, so past a certain speed
@@ -1087,9 +1153,16 @@ function Physics.Step(deltaTime)
 			local flatSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
 			maxStep = math.max(maxStep, flatSpeed * deltaTime)
 		end
+	elseif not State.onLadder and Config.mv_airStep ~= false then
+		-- Deliberately NOT scaled with speed like the grounded case. There the
+		-- scaling tracks how much a ramp rises under you in one tick; here the
+		-- clearance needed is the height of the lip, which does not grow with
+		-- how fast you hit it -- and a lift that grew with speed would be a
+		-- gift to anyone trying to climb something.
+		maxStep = (Config.mv_airStepHeight or 0) * bodyScale
 	end
 
-	pos, vel = MoveWithStep(pos, vel, hullSize, deltaTime, params, op, maxStep)
+	pos, vel = MoveWithStep(pos, vel, hullSize, deltaTime, params, op, maxStep, grounded)
 
 	-- FinishGravity: the second half, after the move, where Source puts it.
 	-- Skipped entirely when the tick was grounded or on a ladder, since

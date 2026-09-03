@@ -160,6 +160,21 @@ Define("mv_jumpBuffer", 0.05, FCVAR.REPLICATED)           -- early jump press st
 -- Departure from GoldSrc: lets step-up keep working at supersonic speeds.
 Define("mv_scaleStepWithSpeed", true, FCVAR.REPLICATED)
 
+-- Stepping while AIRBORNE. Source only steps in WalkMove, which is why a lip
+-- an inch high stops a bhop dead and a seam between two surf brushes ends the
+-- run. Airborne steps carry no walkable-surface requirement (there is nothing
+-- to stand on) and hand the lift back in full when nothing is under the
+-- landing, so clearing an edge never grants height -- only the horizontal
+-- progress is kept. A lift that buys no distance is discarded, which is what
+-- stops it becoming a way to climb walls.
+Define("mv_airStep", true, FCVAR.REPLICATED + FCVAR.CHEAT)
+Define("mv_airStepHeight", 1.63, FCVAR.REPLICATED + FCVAR.CHEAT)  -- 18 units, same as the ground step
+-- How steep a blocking surface has to be before an airborne step will try to
+-- get over it, as |normal.Y|. 0.3 is about 72 degrees. Anything flatter is a
+-- ramp and must be CLIPPED rather than stepped -- clipping along a ramp is
+-- what surf is, and stepping over one instead skips it entirely.
+Define("mv_airStepMaxNormalY", 0.3, FCVAR.REPLICATED + FCVAR.CHEAT)
+
 Define("mv_diveForceForward", 155, FCVAR.REPLICATED)
 Define("mv_diveForceUp", 35, FCVAR.REPLICATED)
 
