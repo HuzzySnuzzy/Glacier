@@ -121,6 +121,14 @@ function Health.Damage(model, amount, opts)
 	if not hum then return 0, false, nil end
 	if model:GetAttribute("Dead") then return 0, false, nil end
 
+	-- sv_cheats toys, held as attributes so nothing outside this module has to
+	-- know they exist -- the console command that sets them doesn't need a
+	-- table of its own, and they clear themselves when the rig is destroyed.
+	-- Neither one blocks Health.Kill: `kill` is how you get out of god mode in
+	-- Source too, and a round-end cleanup that couldn't kill a god-moded player
+	-- would hang the round.
+	if model:GetAttribute("God") then return 0, false, nil end
+
 	local hp = model:GetAttribute("Health")
 	if hp == nil then
 		-- Never set up. Do it now rather than silently no-op.
@@ -168,6 +176,14 @@ function Health.Damage(model, amount, opts)
 
 	-- ---- apply ----
 	local newHp = math.max(hp - damage, 0)
+
+	-- Buddha takes the hit and the armour loss but never the death, so the
+	-- damage numbers stay honest while you test a spray at point blank.
+	if newHp <= 0 and model:GetAttribute("Buddha") then
+		newHp = 1
+		damage = math.max(hp - 1, 0)
+	end
+
 	model:SetAttribute("Health", newHp)
 	hum.Health = newHp
 

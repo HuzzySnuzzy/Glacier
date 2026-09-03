@@ -17,6 +17,18 @@ local Name = "negev"
 
 return {
 	name = Name,
+
+	-- Which inventory slot this weapon may occupy: "primary", "secondary",
+	-- "melee", or "any" (also the meaning of leaving it out) for a weapon
+	-- that fits wherever it is put. Give/primary/secondary/melee all refuse
+	-- a slot this forbids, so a pistol can never end up in the rifle slot.
+	slot = "primary",
+
+	-- Movement speed while this is the ACTIVE weapon, in studs/second.
+	-- CS:GO's MaxPlayerSpeed of 150 units -- an LMG should feel like carrying an LMG.
+	-- Applied as a ratio of mv_walkSpeed, so crouch and walk-key speeds
+	-- scale with it. Omit the field for no penalty at all.
+	maxPlayerSpeed = 13.64,
 	isAuto = true,
 	fireRate = 800,
 	magSize = 150,

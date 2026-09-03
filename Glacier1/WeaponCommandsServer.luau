@@ -13,12 +13,23 @@
 -- Setting any slot raises sv_lockLoadout, which stops the gamemode re-arming
 -- you on your next kill or spawn. Without that, INSTANT_UPGRADE hands you the
 -- ladder weapon back roughly one kill later and the override looks broken.
+--
+-- WHY THIS NO LONGER GOES THROUGH GiveLoadout: it used to read the other two
+-- slots out of GT, then hand all three to GiveLoadout, which rebuilds every
+-- slot from scratch. Two things fell out of that. The GT field names it read
+-- ("weapon_primary") never matched the ones Player_Gametuner writes
+-- ("weapon_Primary") and FindFirstChild is case-sensitive, so both other slots
+-- read back as EMPTY and `primary ak47` silently disarmed you. Even with the
+-- names right, rebuilding a slot mints a fresh item, so the untouched slots
+-- lost their ammo counts. Lifecycle.GiveWeapon touches ONE slot, so neither
+-- can happen.
 
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config      = require(ReplicatedStorage:WaitForChild("Config"))
-local giveloadout = ReplicatedStorage:WaitForChild("GiveLoadout")
+local Glacier     = require(ReplicatedStorage:WaitForChild("Glacier"))
+local Inventory   = require(ReplicatedStorage:WaitForChild("Inventory"))
 
 local setPlayerDefaultLoadout = ReplicatedStorage:WaitForChild("setPlayerDefaultLoadout")
 
@@ -88,12 +99,14 @@ end
 
 local cache = {}   -- [Player] = { primary, secondary, melee }
 
--- GT field names vary by gamemode. Try the likely ones and fall back to EMPTY;
--- trim this list to the single correct name once you've confirmed it.
+-- Player_Gametuner writes weapon_Primary / weapon_Secondary / weapon_Melee.
+-- FindFirstChild is case-sensitive, so the capital matters -- the lowercase
+-- spellings that used to lead this list never matched anything. The other
+-- spellings stay as a fallback for a gamemode that writes its own.
 local FIELD_CANDIDATES = {
-	primary   = { "weapon_primary",   "primary",   "Primary" },
-	secondary = { "weapon_secondary", "secondary", "Secondary" },
-	melee     = { "weapon_melee",     "melee",     "Melee" },
+	primary   = { "weapon_Primary",   "weapon_primary",   "primary",   "Primary" },
+	secondary = { "weapon_Secondary", "weapon_secondary", "secondary", "Secondary" },
+	melee     = { "weapon_Melee",     "weapon_melee",     "melee",     "Melee" },
 }
 
 local function readGT(player, slot)
@@ -109,30 +122,38 @@ local function readGT(player, slot)
 	return nil
 end
 
-local function getLoadout(player)
-	local existing = cache[player]
-	if existing then return existing end
+local SLOT_INDEX = {
+	primary   = Inventory.SLOT_PRIMARY,
+	secondary = Inventory.SLOT_SECONDARY,
+	melee     = Inventory.SLOT_MELEE,
+}
 
+-- What the player is ACTUALLY holding wins over the cache and over GT. The
+-- live inventory is the only one of the three that can't be stale, and it is
+-- the thing every other slot in this file must be left alone.
+local function getLoadout(player)
 	local built = {
-		primary   = readGT(player, "primary")   or EMPTY,
-		secondary = readGT(player, "secondary") or EMPTY,
-		melee     = readGT(player, "melee")     or EMPTY,
+		primary   = EMPTY,
+		secondary = EMPTY,
+		melee     = EMPTY,
 	}
+
+	for name, index in pairs(SLOT_INDEX) do
+		local item = Glacier.GetSlot(player, index)
+		built[name] = (item and item.class)
+			or cache[player] and cache[player][name]
+			or readGT(player, name)
+			or EMPTY
+	end
+
 	cache[player] = built
 	return built
 end
 
-local function apply(player, loadout)
-	-- Mirror into GT first so anything reading the config sees the truth
-	-- before the weapon actually changes hands.
+-- Mirrors the whole loadout into GT so the gamemode's view matches, WITHOUT
+-- re-arming anything: the slot itself was already changed by the caller.
+local function mirrorToGT(player, loadout)
 	setPlayerDefaultLoadout:Fire(player, loadout.primary, loadout.secondary, loadout.melee)
-
-	-- Only arm a live body. GiveLoadout on a dead player is a no-op at best;
-	-- the GT write above means the next spawn picks it up regardless.
-	local body = workspace:FindFirstChild(player.UserId .. "RawBody")
-	if body then giveloadout:Fire(player, loadout) end
-
-	return body ~= nil
 end
 
 Players.PlayerRemoving:Connect(function(player) cache[player] = nil end)
@@ -172,6 +193,8 @@ end
 -- share one body. Writing them out separately would be three chances to fix a
 -- bug in two places.
 local function setSlot(slot)
+	local index = SLOT_INDEX[slot]
+
 	return function(ctx, query)
 		local player = ctx and ctx.player
 		if not player then
@@ -181,18 +204,34 @@ local function setSlot(slot)
 		local name, reason = resolveWeapon(query)
 		if not name then return false, reason end
 
-		local loadout = getLoadout(player)
-		loadout[slot] = name
+		-- A weapon locked to another slot is refused rather than redirected.
+		-- `secondary ak47` asked for something that cannot happen, and quietly
+		-- putting the rifle in slot 1 would look like the command misfired.
+		if name ~= EMPTY then
+			local ok, why = Inventory.CanUseSlot(name, index)
+			if not ok then return false, why end
+		end
 
-		-- Raised before apply: the gamemode's own re-arm can fire off the back
-		-- of GiveLoadout, and it needs to see the lock already up.
+		-- Raised first: the gamemode's re-arm can fire off the back of the
+		-- inventory change, and it needs to see the lock already up.
 		if not Config.Get("sv_lockLoadout") then
 			Config.Set("sv_lockLoadout", true, true)
 		end
 
-		local armed = apply(player, loadout)
+		if name == EMPTY then
+			Glacier.ClearSlot(player, index)   -- already empty is not an error
+		else
+			-- ONE slot. The other two keep their weapons AND their ammo.
+			local ok, why = Glacier.GiveWeapon(player, name, nil, index)
+			if not ok then return false, tostring(why) end
+		end
+
+		mirrorToGT(player, getLoadout(player))
+
+		-- The inventory is server-side, so this lands whether or not you have a
+		-- body; only the viewmodel waits for one.
 		reply(ctx, ("[Loadout] %s = %s%s"):format(
-			slot, name, armed and "" or "  (queued; you're not alive)"))
+			slot, name, Glacier.IsAlive(player) and "" or "  (queued; you're not alive)"))
 		return true
 	end
 end
@@ -227,8 +266,11 @@ Config.Command("noweapons", {
 		if not player then return false, "noweapons needs a player" end
 
 		local loadout = { primary = EMPTY, secondary = EMPTY, melee = EMPTY }
+		for _, index in pairs(SLOT_INDEX) do
+			Glacier.ClearSlot(player, index)
+		end
 		cache[player] = loadout
-		apply(player, loadout)
+		mirrorToGT(player, loadout)
 
 		-- Released, not raised. noweapons is how you get back to normal, so
 		-- leaving the lock up would mean the gamemode never re-arms you and

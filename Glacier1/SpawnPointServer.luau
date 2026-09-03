@@ -84,7 +84,13 @@ local function occupiedPositions()
 	for _, plr in ipairs(Players:GetPlayers()) do
 		local body = workspace:FindFirstChild(plr.UserId .. "RawBody")
 		if body then
-			local ok, pivot = pcall(function() return body:GetPivot() end)
+			-- The Puppet, where there is one. The RawBody's CFrame is written
+			-- client-side by Physics and never replicates, so on the server it
+			-- reads as the spawn point for the whole round -- which made every
+			-- live player look like they were standing on their own spawn.
+			local puppet = body:FindFirstChild("Puppet")
+			local target = (puppet and puppet.PrimaryPart) and puppet or body
+			local ok, pivot = pcall(function() return target:GetPivot() end)
 			if ok then table.insert(out, pivot.Position) end
 		end
 	end

@@ -6,6 +6,18 @@
 local Name = "ak47"
 return {
 	name = Name,
+
+	-- Which inventory slot this weapon may occupy: "primary", "secondary",
+	-- "melee", or "any" (also the meaning of leaving it out) for a weapon
+	-- that fits wherever it is put. Give/primary/secondary/melee all refuse
+	-- a slot this forbids, so a pistol can never end up in the rifle slot.
+	slot = "primary",
+
+	-- Movement speed while this is the ACTIVE weapon, in studs/second.
+	-- CS:GO's MaxPlayerSpeed of 215 units -- rifle, heavier than the M4.
+	-- Applied as a ratio of mv_walkSpeed, so crouch and walk-key speeds
+	-- scale with it. Omit the field for no penalty at all.
+	maxPlayerSpeed = 19.55,
 	isAuto = true,
 	fireRate = 600,
 	magSize = 30,
