@@ -81,7 +81,10 @@ local ALIASES = {
 	semicolon = "Semicolon", comma = "Comma", period = "Period",
 	slash = "Slash", backslash = "BackSlash", minus = "Minus", equal = "Equals",
 	["["] = "LeftBracket", ["]"] = "RightBracket", ["'"] = "Quote",
-	["`"] = "Backquote",
+	-- All four spell the console key. Roblox calls it Backquote; players call
+	-- it tilde and type either glyph, and `bind ~ toggleconsole` should work.
+	["`"] = "Backquote", ["~"] = "Backquote",
+	backquote = "Backquote", tilde = "Backquote",
 
 	["0"] = "Zero", ["1"] = "One", ["2"] = "Two", ["3"] = "Three",
 	["4"] = "Four", ["5"] = "Five", ["6"] = "Six", ["7"] = "Seven",
@@ -182,7 +185,10 @@ local DEFAULT_BINDS = {
 	{ "x", "prone" }, { "ctrl", "dive" },
 	{ "mouse1", "+attack" }, { "mouse2", "+attack2" }, { "r", "+reload" },
 	{ "1", "slot1" }, { "2", "slot2" }, { "3", "slot3" },
-	{ "v", "thirdperson" }, { "f3", "toggleconsole" }, { "f", "+lookatweapon" },
+	-- Tilde is the console key everyone reaches for; F3 stays as a second one
+	-- for keyboards that make the backquote awkward.
+	{ "`", "toggleconsole" }, { "f3", "toggleconsole" },
+	{ "v", "thirdperson" }, { "f", "+lookatweapon" },
 	{ "e", "+use" }, { "g", "drop" },
 }
 

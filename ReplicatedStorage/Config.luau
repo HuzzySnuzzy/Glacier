@@ -633,6 +633,12 @@ Define("con_timestamp", false, FCVAR.CLIENT)
 -- modal, so keeping output in that one would mean a pinned log held the cursor
 -- free and gameplay input dead.
 Define("con_pin", false, FCVAR.CLIENT)        -- keep the output panel up when the prompt is closed
+-- Roblox's Backpack owns the backquote/tilde key and opens the inventory with
+-- it; that CoreGui binding cannot be unbound, so the console switches the
+-- Backpack off to take the key. Costs this game nothing -- weapons live in the
+-- Inventory module, not in a Roblox backpack. Set false to keep the backpack
+-- and bind the console elsewhere.
+Define("con_freeToggleKey", true, FCVAR.CLIENT)
 Define("con_syntax", true, FCVAR.CLIENT)      -- colour the command line as you type
 Define("con_hint", true, FCVAR.CLIENT)        -- show the live value/usage beside the prompt
 Define("con_opacity", 0.12, FCVAR.CLIENT)     -- panel background transparency

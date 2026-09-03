@@ -25,6 +25,7 @@
 -- The badges say the same thing in text for anyone who can't rely on hue.
 
 local UserInputService  = game:GetService("UserInputService")
+local StarterGui        = game:GetService("StarterGui")
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LogService        = game:GetService("LogService")
@@ -71,6 +72,29 @@ local State = require(ClientModules:WaitForChild("State"))
 local function hasFlag(flag, want)
 	return bit32.band(flag or Config.FCVAR.CLIENT, want) ~= 0
 end
+
+--=====================================================================
+-- THE TILDE KEY
+--=====================================================================
+-- Roblox's Backpack owns the backquote/tilde key and opens the inventory with
+-- it. That binding belongs to the CoreGui and cannot be unbound, so the only
+-- way to have the key is to switch the Backpack off -- which costs this game
+-- nothing, since weapons live in the Inventory module and are rendered by
+-- Visuals; the Roblox backpack has never held anything.
+--
+-- Retried once a second because SetCoreGuiEnabled throws if the CoreGui is not
+-- ready yet, and a console you cannot open is not a small failure.
+task.spawn(function()
+	for _ = 1, 10 do
+		if Config.con_freeToggleKey == false then return end
+		local ok = pcall(function()
+			StarterGui:SetCoreGuiEnabled(Enum.CoreGuiType.Backpack, false)
+		end)
+		if ok then return end
+		task.wait(1)
+	end
+	warn("[DevConsole] could not disable the Backpack CoreGui; tilde may still open the inventory.")
+end)
 
 --=====================================================================
 -- PALETTE
@@ -762,10 +786,29 @@ local function isOpen()
 	return screenGui.Enabled
 end
 
+-- Set the moment the toggle key is seen. sanitiseInput drops the key's own
+-- glyph only inside a short window after this, which is what keeps a tilde
+-- someone actually typed -- `echo ~` -- out of it.
+local lastToggleClock = -1
+
+-- Forward-declared: setOpen re-runs the cleaner after a toggle, and the cleaner
+-- lives further down with the rest of the text handling. repaintInput is NOT
+-- declared again here -- it is already in scope, and a second `local` would
+-- shadow it with nil for the whole rest of the file.
+local sanitiseInput
+
 local function setOpen(open)
 	if screenGui.Enabled == open then return end
 	screenGui.Enabled = open
 	syncOutputVisible()
+
+	-- Deferred rather than immediate, because the glyph can arrive on either
+	-- side of this handler: Roblox may type it into the focused box before the
+	-- action fires or after. One pass a frame later catches both.
+	task.defer(function()
+		if sanitiseInput then sanitiseInput() end
+		repaintInput()
+	end)
 
 	if open then
 		-- Deferred: CaptureFocus on a ScreenGui that hasn't rendered yet is
@@ -794,6 +837,7 @@ syncOutputVisible()
 -- modalPassthrough in Input -- a disabled InputContext delivers no events.
 Input.ActionPressed.Event:Connect(function(command)
 	if command == "toggleconsole" then
+		lastToggleClock = os.clock()
 		setOpen(not isOpen())
 	end
 end)
@@ -920,7 +964,46 @@ local function updateSuggestions()
 	highlightSuggestion()
 end
 
+-- Tab completes, but Roblox ALSO types the tab character into the box, and a
+-- literal \t renders as a wide blank that throws the whole line's spacing out
+-- (and the colour overlay's alignment with it). Newlines and carriage returns
+-- arrive the same way from a paste. None of the three ever mean anything on a
+-- command line, so they are removed wherever they come from rather than only
+-- where completion put them.
+function sanitiseInput()
+	local text = inputField.Text
+	local cleaned = text:gsub("[\t\n\r]", "")
+
+	-- The toggle key types its own glyph into the box when the console is
+	-- closed from a focused prompt, and it is still there on the next open.
+	-- Scoped to a moment after the key was seen, so a tilde typed on purpose --
+	-- `echo ~`, `say ~` -- is never touched. Tripping it by accident means
+	-- typing a tilde in the same breath as the key that just opened the
+	-- console, which is not something anyone means.
+	if os.clock() - lastToggleClock < 0.25 then
+		cleaned = cleaned:gsub("[`~]+$", "")
+	end
+
+	if cleaned == text then return false end
+
+	internalEdit = true
+	inputField.Text = cleaned
+	internalEdit = false
+	-- Deferred: a CursorPosition written in the same frame as Text is
+	-- overwritten by the TextBox's own update.
+	task.defer(function() inputField.CursorPosition = #inputField.Text + 1 end)
+	return true
+end
+
 inputField:GetPropertyChangedSignal("Text"):Connect(function()
+	-- The assignment inside sanitiseInput re-enters this handler with
+	-- internalEdit set, so that pass repaints and stops; finish the job here.
+	if sanitiseInput() then
+		repaintInput()
+		updateSuggestions()
+		return
+	end
+
 	repaintInput()
 	if internalEdit then return end
 	updateSuggestions()
@@ -1176,7 +1259,10 @@ Config.Command("echo", {
 Config.Command("toggleconsole", {
 	args = {},
 	help = "open or close the console",
-	run = function() setOpen(not isOpen()) end,
+	run = function()
+		lastToggleClock = os.clock()
+		setOpen(not isOpen())
+	end,
 })
 
 Config.Command("con_reset", {
