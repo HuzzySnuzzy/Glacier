@@ -269,6 +269,24 @@ end
 -- Step-up owns climbing.
 -- Returns pos, vel, blocked, blockNormal. The normal is the first surface that
 -- actually stopped progress; the caller needs it to tell a wall from a ramp.
+-- Rate-limited, because a wedge reports every tick and would bury the console.
+local lastStopReport = 0
+
+local function reportStop(reason, before, after, planeCount)
+	if not Config.mv_debugStops then return end
+
+	local flatBefore = Vector3.new(before.X, 0, before.Z).Magnitude
+	local flatAfter  = Vector3.new(after.X, 0, after.Z).Magnitude
+	if flatBefore < 20 or flatAfter > flatBefore * 0.5 then return end
+
+	local now = os.clock()
+	if now - lastStopReport < 1 then return end
+	lastStopReport = now
+
+	warn(("[mv] %s took %.0f -> %.0f studs/s (%d planes)")
+		:format(reason, flatBefore, flatAfter, planeCount))
+end
+
 local function MoveAndSlide(pos, vel, size, dt, params, noUp)
 	local remaining = dt
 	local planes = {}
@@ -333,19 +351,62 @@ local function MoveAndSlide(pos, vel, size, dt, params, noUp)
 			end
 		end
 
-		-- Trapped between planes: the only legal direction is their seam.
+		-- Nothing slid cleanly against a single plane.
+		--
+		-- The old answer was to jump straight to the crease of planes[1] and
+		-- planes[2], and that is what turned a fast scrape along a wall into a
+		-- dead stop. A wall built from more than one brush presents faces whose
+		-- normals differ by a few degrees; both get recorded, and two
+		-- near-parallel VERTICAL planes cross to a VERTICAL line. Projecting
+		-- velocity onto it keeps the fall and throws away every bit of the
+		-- horizontal speed -- which reads, correctly, as losing everything to a
+		-- surface you barely touched.
+		--
+		-- Clip against each blocking plane in turn instead. The result sits
+		-- inside all of their half-spaces, and for two faces of the same wall
+		-- that is simply sliding along the wall: a 300 stud/s scrape across two
+		-- planes ten degrees apart comes out at 301, not at 40.
 		if not resolved then
-			if #planes >= 2 then
-				local dir = planes[1]:Cross(planes[2])
-				if dir.Magnitude > 0.001 then
-					vel = dir.Unit * vel:Dot(dir.Unit)
-				else
-					vel = Vector3.zero
-					break
+			local candidate = vel
+			for _, n in ipairs(planes) do
+				if candidate:Dot(n) < 0 then
+					candidate = Math.ClipVelocity(candidate, n, overbounce)
 				end
+			end
+
+			local trapped = false
+			for _, n in ipairs(planes) do
+				if candidate:Dot(n) < -0.01 then trapped = true break end
+			end
+
+			if not trapped then
+				reportStop("sequential clip", vel, candidate, #planes)
+				vel = candidate
 			else
-				vel = Vector3.zero
-				break
+				-- A real corner, where no direction satisfies every plane at
+				-- once. Now the crease is right -- but from the two MOST
+				-- OPPOSED planes, not whichever two arrived first, which need
+				-- not be the pair doing the trapping.
+				local dir, best = nil, 0
+				for i = 1, #planes do
+					for j = i + 1, #planes do
+						local cross = planes[i]:Cross(planes[j])
+						local mag = cross.Magnitude
+						if mag > best then dir, best = cross / mag, mag end
+					end
+				end
+
+				if dir and best > 0.001 then
+					local creased = dir * vel:Dot(dir)
+					reportStop("crease projection", vel, creased, #planes)
+					vel = creased
+				else
+					-- Every pair is degenerate: there is no crease to be
+					-- trapped in, so slide on the last plane rather than stop.
+					local slid = Math.ClipVelocity(vel, planes[#planes], overbounce)
+					reportStop("degenerate crease", vel, slid, #planes)
+					vel = slid
+				end
 			end
 		end
 

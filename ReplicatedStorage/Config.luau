@@ -175,6 +175,12 @@ Define("mv_airStepHeight", 1.63, FCVAR.REPLICATED + FCVAR.CHEAT)  -- 18 units, s
 -- what surf is, and stepping over one instead skips it entirely.
 Define("mv_airStepMaxNormalY", 0.3, FCVAR.REPLICATED + FCVAR.CHEAT)
 
+-- Reports, once a second at most, every time the slide resolver costs you more
+-- than half your horizontal speed in a single tick -- naming which branch did
+-- it and how many planes were involved. The console captures client warnings,
+-- so this answers "what just ate my run" without a debug build.
+Define("mv_debugStops", false, FCVAR.CLIENT)
+
 Define("mv_diveForceForward", 155, FCVAR.REPLICATED)
 Define("mv_diveForceUp", 35, FCVAR.REPLICATED)
 
