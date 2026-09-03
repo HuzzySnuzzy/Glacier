@@ -626,6 +626,22 @@ Define("con_suggestions", 12, FCVAR.CLIENT)    -- rows in the autocomplete dropd
 -- spew. Does NOT capture server output -- that still needs ctx.reply.
 Define("con_spew", true, FCVAR.CLIENT)
 Define("con_timestamp", false, FCVAR.CLIENT)
+
+-- DevConsole: a command line across the top of the screen and a separate,
+-- draggable output panel. The panel lives in its own ScreenGui so it can stay
+-- up with the prompt closed -- Input treats a ScreenGui named "Console" as
+-- modal, so keeping output in that one would mean a pinned log held the cursor
+-- free and gameplay input dead.
+Define("con_pin", false, FCVAR.CLIENT)        -- keep the output panel up when the prompt is closed
+Define("con_syntax", true, FCVAR.CLIENT)      -- colour the command line as you type
+Define("con_hint", true, FCVAR.CLIENT)        -- show the live value/usage beside the prompt
+Define("con_opacity", 0.12, FCVAR.CLIENT)     -- panel background transparency
+-- Panel geometry in pixels. X of -1 means "dock to the right edge"; dragging
+-- writes real coordinates here, so the panel keeps its place for the session.
+Define("con_panelX", -1, FCVAR.CLIENT)
+Define("con_panelY", 88, FCVAR.CLIENT)
+Define("con_panelW", 440, FCVAR.CLIENT)
+Define("con_panelH", 540, FCVAR.CLIENT)
 Define("sv_lifecycleDebug", false, FCVAR.CHEAT)   -- announce body/puppet create and destroy
 
 --=====================================================================
