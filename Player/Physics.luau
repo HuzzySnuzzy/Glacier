@@ -595,8 +595,6 @@ local function Commit(body, pos, vel, deltaTime)
 
 	State.prevBodyPos  = State.curBodyPos or pos
 	State.curBodyPos   = pos
-	State.stepInterval = deltaTime
-	State.tickAlpha    = 0
 
 	body.Transparency = Config.cl_showbody and 0 or 1
 
@@ -623,6 +621,17 @@ function Physics.Update(deltaTime)
 		steps += 1
 	end
 	Physics.stepsThisFrame = steps
+
+	-- What the render interpolates with. The leftover is the time that has NOT
+	-- been simulated yet, so it is exactly how far past the last completed step
+	-- the world stands right now -- and this is called from the top of the
+	-- frame, before anything draws, which is what makes it current.
+	--
+	-- Set HERE and not in Commit. Commit runs per STEP, and at 240Hz on a 60Hz
+	-- display that is four resets a frame, all of them discarding the remainder
+	-- that makes the number mean anything.
+	State.stepInterval = fixedDelta
+	State.tickAlpha = math.clamp(accumulator / fixedDelta, 0, 1)
 end
 
 function Physics.Step(deltaTime)
