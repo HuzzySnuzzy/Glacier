@@ -3,7 +3,7 @@
 --
 -- One entry point to the engine, from any script in either VM:
 --   local G = require(game:GetService("ReplicatedStorage"):WaitForChild("Glacier"))
---   G.Config.mv_gravity          -- shared, always there
+--   G.Config.sv_gravity          -- shared, always there
 --   G.Physics.Step(dt)           -- client only
 --   G.Respawn(plr)               -- server only
 --
@@ -361,11 +361,7 @@ function Glacier.Tell(plr, message, isError)
 end
 
 -- Console plumbing, forwarded so a script that already has Glacier doesn't
--- have to require Config as well just to register one command or alias.
-function Glacier.Alias(name, target, opts)
-	return cfg().Alias(name, target, opts)
-end
-
+-- have to require Config as well just to register one command.
 function Glacier.RemoveCommand(name)
 	return cfg().RemoveCommand(name)
 end

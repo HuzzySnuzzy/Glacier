@@ -157,7 +157,7 @@ Health.Killed.Event:Connect(function(model, attacker, group)
 	end
 
 	if Config.Values.mp_respawn then
-		task.delay(Config.Values.mp_respawnDelay, function()
+		task.delay(Config.Values.mp_respawnwavetime, function()
 			if model.Parent then Health.Revive(model) end
 		end)
 	end

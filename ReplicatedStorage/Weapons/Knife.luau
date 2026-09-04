@@ -10,7 +10,7 @@ return {
 
 	-- Movement speed while this is the ACTIVE weapon, in studs/second.
 	-- CS:GO's MaxPlayerSpeed of 250 units -- the fastest thing you can hold, which is the point of switching to it.
-	-- Applied as a ratio of mv_walkSpeed, so crouch and walk-key speeds
+	-- Applied as a ratio of sv_maxspeed, so crouch and walk-key speeds
 	-- scale with it. Omit the field for no penalty at all.
 	maxPlayerSpeed = 22.73,
 	isAuto = true,

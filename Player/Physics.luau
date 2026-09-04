@@ -14,7 +14,8 @@
 -- Requires in Character.Spawn: body.Anchored = true, body.CanCollide = false
 
 local CollectionService = game:GetService("CollectionService")
-local Config = require(game:GetService("ReplicatedStorage"):WaitForChild("Config"))
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Config = require(ReplicatedStorage:WaitForChild("Config"))
 local State   = require(script.Parent.State)
 local Math    = require(script.Parent.MovementMath)
 local Visuals = require(script.Parent.Visuals)
@@ -192,7 +193,7 @@ end
 -- moving on. PB clamps to 1.0 so only surfaces BELOW the reference matter.
 -- Roblox's Plastic sits at 0.3, so that's our stand-in for Source's 1.0.
 local function SurfaceFrictionFor(part)
-	if not part or not (Config.mv_surfaceFriction ~= false) then return 1 end
+	if not part or not (Config.sv_surfacefriction ~= false) then return 1 end
 	local props = part.CurrentPhysicalProperties
 	if not props then return 1 end
 	local ref = Config.mv_surfaceFrictionRef or 0.3
@@ -208,7 +209,7 @@ end
 -- about to walk off a ledge, so friction is doubled. This is the entire
 -- reason Source players can stop on a crate edge instead of sliding off.
 local function EdgeFrictionMultiplier(pos, hullSize, vel, params, bodyScale, hasInput, ducked)
-	local mult = Config.mv_edgeFriction or 2
+	local mult = Config.sv_edgefriction or 2
 	if mult <= 1 then return 1 end
 
 	-- PB gates it to braking only; GoldSrc applied it unconditionally.
@@ -546,7 +547,7 @@ local function AssistWishDir(wishDir, horizontalVel, targetSpeed, deltaTime, cap
 	-- Aim just under the cap so the full accel step lands each tick rather
 	-- than being clamped by addSpeed. Uses the EFFECTIVE cap, so an SGS
 	-- boost widens the angle to match.
-	local accelPerTick = Config.mv_airAcceleration * targetSpeed * deltaTime
+	local accelPerTick = Config.sv_airaccelerate * targetSpeed * deltaTime
 	local targetProj = math.max(cap - accelPerTick, 0)
 	local theta = math.acos(math.clamp(targetProj / speed, -1, 1))
 
@@ -659,7 +660,7 @@ function Physics.Step(deltaTime)
 	-- comes from jump/duck rather than view pitch, since wishDir is already
 	-- flattened by the time it reaches us.
 	if State.noclip then
-		local speed = (Config.mv_noclipSpeed or 45) * (State.isWalking and 0.25 or 1)
+		local speed = (Config.sv_noclipspeed or 45) * (State.isWalking and 0.25 or 1)
 		local wish = State.wishDir or Vector3.zero
 		local move = Vector3.new(wish.X, 0, wish.Z)
 		if move.Magnitude > 1 then move = move.Unit end
@@ -777,19 +778,19 @@ function Physics.Step(deltaTime)
 	local proneForSpeed  = instantSpeed and State.isProne or State.isProneStance
 	local duckedForSpeed = instantSpeed and State.isCrouching or State.isDucked
 
-	local targetSpeed = Config.mv_walkSpeed
+	local targetSpeed = Config.sv_maxspeed
 	if proneForSpeed then
 		targetSpeed = Config.mv_proneSpeed
 	elseif duckedForSpeed then
-		targetSpeed = Config.mv_crouchSpeed
+		targetSpeed = Config.sv_duckspeed
 	elseif State.isWalking then
-		targetSpeed = Config.mv_walkKeySpeed
+		targetSpeed = Config.sv_walkspeed
 	end
 
 	-- Per-weapon speed. CS:GO gives every weapon its own MaxPlayerSpeed, and
 	-- the held one sets the player's: knife 250 units, rifle 215, Negev 150.
 	--
-	-- Applied as a RATIO of mv_walkSpeed rather than replacing targetSpeed
+	-- Applied as a RATIO of sv_maxspeed rather than replacing targetSpeed
 	-- outright, so crouch, walk-key and prone all scale with the weapon --
 	-- CS:GO derives those from the weapon's max too, so crouch-walking with a
 	-- Negev is slower than crouch-walking with a knife. Substituting the
@@ -800,7 +801,7 @@ function Physics.Step(deltaTime)
 	if Config.mv_weaponSpeed ~= false then
 		local stats = State.currentWeaponStats
 		local weaponMax = stats and stats.maxPlayerSpeed
-		local base = Config.mv_walkSpeed
+		local base = Config.sv_maxspeed
 		if type(weaponMax) == "number" and weaponMax > 0 and base and base > 0 then
 			State.weaponSpeedScale = weaponMax / base
 			targetSpeed = targetSpeed * State.weaponSpeedScale
@@ -860,9 +861,20 @@ function Physics.Step(deltaTime)
 		ViewSway.Land(vel.Y)
 		State.dbgJumpHeight = 0
 
+		-- The impact only exists here: the client owns movement, and the
+		-- server's copy of the body never moves. Reported rather than applied
+		-- -- health is the server's, and the worst a lying client can do with
+		-- this is hurt itself.
+		local impact = -math.min(vel.Y, 0)
+		State.lastLandSpeed = impact
+		if Config.sv_falldamage ~= false and impact > (Config.sv_falldamage_threshold or 52.7) then
+			local remote = ReplicatedStorage:FindFirstChild("FallDamage")
+			if remote then remote:FireServer(impact) end
+		end
+
 		-- CS:GO charges stamina for the landing as well as the jump, which is
 		-- what makes a chain of hops decay rather than just the second one.
-		if Config.mv_stamina then
+		if Config.sv_stamina then
 			local maxStamina = Config.sv_staminamax or 80
 			State.stamina = math.min(maxStamina,
 				(State.stamina or 0) + (Config.sv_staminalandcost or 0) * maxStamina)
@@ -906,7 +918,7 @@ function Physics.Step(deltaTime)
 	--------------------------------------------------------------
 	local jumpedThisFrame = false
 	local canJump = State.isGrounded or (State.coyoteTimer > 0 and not State.isJumping)
-	local wantsJump = (Config.mv_autoBhop and State.spaceHeld) or State.jumpBufferTimer > 0
+	local wantsJump = (Config.sv_autobunnyhopping and State.spaceHeld) or State.jumpBufferTimer > 0
 
 	-- Holding crouch through the jump is the crouch-jump: stay ducked, tuck
 	-- the feet, clear more. Toggle mode keeps whatever was toggled.
@@ -935,8 +947,8 @@ function Physics.Step(deltaTime)
 			end
 
 			-- Jump fatigue: each hop leaves less in the legs for the next.
-			local jumpSpeed = Config.mv_jumpForce
-			if Config.mv_stamina then
+			local jumpSpeed = Config.sv_jump_impulse
+			if Config.sv_stamina then
 				local maxStamina = Config.sv_staminamax or 80
 				local stamina = math.clamp(State.stamina or 0, 0, maxStamina)
 				if maxStamina > 0 then
@@ -1069,8 +1081,8 @@ function Physics.Step(deltaTime)
 	-- FlyMove, FinishGravity the other half after (PM_PlayerMove ->
 	-- FullWalkMove). Not a rounding detail -- it is Euler versus the
 	-- trapezoid rule, and it is what makes jump apex land on v^2/2g at ANY
-	-- tickrate. Measured against the analytic 4.0946 studs for mv_jumpForce
-	-- 24.4 / mv_gravity 72.7:
+	-- tickrate. Measured against the analytic 4.0946 studs for sv_jump_impulse
+	-- 24.4 / sv_gravity 72.7:
 	--
 	--   all up front (what this was)   240Hz 4.0440   100Hz 3.9735   64Hz 3.9062
 	--   split                          240Hz 4.0945   100Hz 4.0939   64Hz 4.0926
@@ -1102,8 +1114,8 @@ function Physics.Step(deltaTime)
 
 		local speed = horizontalVel.Magnitude
 		if speed > 0.1 and brakingAllowed then
-			local control = speed < Config.mv_stopSpeed and Config.mv_stopSpeed or speed
-			local activeFriction = Config.mv_groundFriction * surface
+			local control = speed < Config.sv_stopspeed and Config.sv_stopspeed or speed
+			local activeFriction = Config.sv_friction * surface
 
 			-- Doubled friction on a ledge edge. Published so the HUD can show
 			-- whether it actually fired -- this is the cvar most likely to
@@ -1143,7 +1155,7 @@ function Physics.Step(deltaTime)
 		-- slide correctly but still accelerate like you're on concrete.
 		horizontalVel = Math.QuakeGroundAccelerate(
 			horizontalVel, State.wishDir, targetSpeed,
-			Config.mv_groundAcceleration * surface, deltaTime
+			Config.sv_accelerate * surface, deltaTime
 		)
 
 		-- Velocity stays flat while grounded. Ramps are climbed by step-up and
@@ -1158,7 +1170,7 @@ function Physics.Step(deltaTime)
 			-- addSpeed = cap - proj, so the cap is what actually limits how
 			-- much a tick can add. Raising it during lift frames boosts SGS
 			-- without touching normal air-strafing or surf.
-			local cap = Config.mv_airSpeedCap
+			local cap = Config.sv_air_max_wishspeed
 			if State.duckLift > 0 then
 				cap = cap * (Config.mv_sgsCapMult or 1)
 			end
@@ -1171,14 +1183,14 @@ function Physics.Step(deltaTime)
 			-- worse than one off concrete.
 			horizontalVel = Math.QuakeAirAccelerate(
 				horizontalVel, wish, targetSpeed,
-				Config.mv_airAcceleration * (State.surfaceFriction or 1), deltaTime, cap
+				Config.sv_airaccelerate * (State.surfaceFriction or 1), deltaTime, cap
 			)
 		end
 
 		-- First half now; FinishGravity below pays the rest after the move.
-		pendingGravity = Config.mv_gravity * deltaTime * 0.5
+		pendingGravity = Config.sv_gravity * deltaTime * 0.5
 		verticalVel = verticalVel - pendingGravity
-		verticalVel = math.max(verticalVel, -(Config.mv_maxFallSpeed or 181))
+		verticalVel = math.max(verticalVel, -(Config.sv_maxfallspeed or 181))
 	end
 
 	-- Optional sanity clamp; 0 disables. ABH will exceed anything sensible.
@@ -1199,7 +1211,7 @@ function Physics.Step(deltaTime)
 
 	-- sv_maxvelocity: Source clamps each AXIS independently, not the magnitude.
 	-- That's a different shape of clamp -- a diagonal can reach cap * sqrt(2).
-	local axisCap = Config.mv_maxVelocity or 0
+	local axisCap = Config.sv_maxvelocity or 0
 	if axisCap > 0 then
 		vel = Vector3.new(
 			math.clamp(vel.X, -axisCap, axisCap),
@@ -1215,7 +1227,7 @@ function Physics.Step(deltaTime)
 	local maxStep = 0
 
 	if grounded then
-		maxStep = Config.mv_maxStepHeight * bodyScale
+		maxStep = Config.sv_stepsize * bodyScale
 		if Config.mv_scaleStepWithSpeed then
 			-- Step-up climbs at most maxStep per tick, so past a certain speed
 			-- the rise per tick exceeds it and we stall against the ramp.
@@ -1239,7 +1251,7 @@ function Physics.Step(deltaTime)
 	-- pendingGravity is only ever set by the airborne branch.
 	if pendingGravity > 0 then
 		vel = Vector3.new(vel.X,
-			math.max(vel.Y - pendingGravity, -(Config.mv_maxFallSpeed or 181)),
+			math.max(vel.Y - pendingGravity, -(Config.sv_maxfallspeed or 181)),
 			vel.Z)
 	end
 
@@ -1259,7 +1271,7 @@ function Physics.Step(deltaTime)
 	if State.isGrounded and not jumpedThisFrame and not State.isJumping
 		and not State.isDiving and State.duckLift <= 0 and vel.Y <= 0.01 and not State.onLadder then
 
-		local maxDrop = Config.mv_maxStepHeight * bodyScale * (Config.mv_stepDownFraction or 1)
+		local maxDrop = Config.sv_stepsize * bodyScale * (Config.mv_stepDownFraction or 1)
 		local stick = Sweep(pos, hullSize, Vector3.new(0, -maxDrop, 0), params)
 		if stick and stick.Normal.Y >= GROUND_NORMAL_Y then
 			local drop = math.max(stick.Distance - SKIN, 0)

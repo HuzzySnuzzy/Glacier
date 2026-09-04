@@ -75,7 +75,7 @@ return {
 	melee = "Knife",
 	activeSlot = 1, -- Starts with Slot 1 (Primary) equipped
 	currentWeaponStats = nil, -- Holds the data from the weapon module
-	-- Held weapon's maxPlayerSpeed as a fraction of mv_walkSpeed. Published by
+	-- Held weapon's maxPlayerSpeed as a fraction of sv_maxspeed. Published by
 	-- Physics each tick; 1 means no penalty.
 	weaponSpeedScale = 1,
 	currentAmmo = 0,
@@ -93,7 +93,7 @@ return {
 	dropRequested = false,
 	useRequested = false,
 
-	-- CS:GO jump fatigue. Only read when mv_stamina is on; 0 is "rested".
+	-- CS:GO jump fatigue. Only read when sv_stamina is on; 0 is "rested".
 	stamina = 0,
 	nextFireTime = 0,
 	reloadEndTime = 0,

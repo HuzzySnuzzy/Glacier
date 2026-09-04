@@ -119,7 +119,7 @@ function Crosshair.Update(deltaTime)
 	local cx, cy = viewport.X / 2, viewport.Y / 2
 
 	local thickness = Config.cl_crosshairthickness or 2
-	local length    = Config.cl_crosshairlength or 7
+	local length    = Config.cl_crosshairsize or 7
 	local baseGap   = Config.cl_crosshairgap or 4
 	local colour    = Config.cl_crosshaircolor or Color3.fromRGB(0, 255, 0)
 	local alpha     = 1 - (Config.cl_crosshairalpha or 1)
@@ -147,7 +147,7 @@ function Crosshair.Update(deltaTime)
 	gap = math.clamp(gap, 0, viewport.Y * 0.45)
 
 	-- ---- bars ----
-	local outlineThickness = Config.cl_crosshairoutline and 1 or 0
+	local outlineThickness = Config.cl_crosshair_drawoutline and 1 or 0
 	local offset = gap + length / 2
 
 	local function place(bar, dx, dy, w, h)

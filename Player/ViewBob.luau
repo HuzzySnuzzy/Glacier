@@ -16,7 +16,7 @@
 --   mouse/movement sway -- ViewSway owns the vm_lag* / vm_move* cvars
 --
 -- AMPLITUDE: Source's numbers are transcribed exactly, then scaled by
--- cl_bobAmtVert/Lat and cl_bobTrans on the way out. Faithful Source bob is
+-- cl_bobamt_vert/Lat and cl_bobTrans on the way out. Faithful Source bob is
 -- angle-dominant and very small -- 0.9 degrees of roll and under a fiftieth
 -- of a stud of travel at run speed. Readable on a 90-degree HL2 view; not
 -- readable here. Scaling on OUTPUT keeps the shape and dodges the (-7,+4)
@@ -39,7 +39,7 @@ ViewBob.bobSpeed    = 0
 -- UNITS
 --=====================================================================
 
--- The project's conversion, consistent with Config (mv_walkSpeed 22.7 = 250).
+-- The project's conversion, consistent with Config (sv_maxspeed 22.7 = 250).
 local UNITS_PER_STUD = 11
 
 -- Source clamps the vertical bob to (-7, +4) units. Applied to the RAW bob,
@@ -222,8 +222,8 @@ function ViewBob.Update(deltaTime, speed)
 	-- moves translation and angle together, preserving the angle-dominant
 	-- character; cl_bobTrans then lifts translation alone, because Source's
 	-- 0.1 weight is invisible at this scale.
-	vBob = vBob * (Config.cl_bobAmtVert or 1)
-	lBob = lBob * (Config.cl_bobAmtLat or 1)
+	vBob = vBob * (Config.cl_bobamt_vert or 1)
+	lBob = lBob * (Config.cl_bobamt_lat or 1)
 	local trans = Config.cl_bobTrans or 1
 
 	ViewBob.verticalBob, ViewBob.lateralBob = vBob, lBob
@@ -269,7 +269,7 @@ function ViewBob.Update(deltaTime, speed)
 	-- as a raw term it steps whenever speed does, and at anything above a
 	-- couple of hundredths it becomes a static droop larger than the
 	-- oscillation riding on it -- which reads as the bob having died.
-	local targetLower = (Config.cl_bobLowerAmt or 0) * speedRatio
+	local targetLower = (Config.cl_bob_lower_amt or 0) * speedRatio
 	lowerAmt = lowerAmt + (targetLower - lowerAmt) * (1 - math.exp(-8 * deltaTime))
 
 	local ox = lBob * TRANS_LAT  * trans

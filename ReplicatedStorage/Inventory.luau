@@ -333,19 +333,46 @@ function Inventory.SerializeAll(state)
 	return out
 end
 
+-- A server push is a CORRECTION, not necessarily a change of weapon.
+--
+-- This used to rebuild every slot and touch() unconditionally, which bumps
+-- inventoryRev -- and Visuals reads that as "this slot holds something else
+-- now" and replays the draw animation. Once the server started pushing after a
+-- reload, that meant the gun re-equipped itself every time you reloaded.
+--
+-- A slot whose id and class are unchanged is the SAME weapon with new counts,
+-- so its numbers are written in place and nothing is rebuilt. Only a genuine
+-- swap -- a different weapon, or an empty slot filling -- is structural.
 function Inventory.ApplyAll(state, packet)
 	if type(packet) ~= "table" then return end
+
 	local s = slots(state)
+	local structural = false
+
 	for i = 1, Inventory.SLOT_COUNT do
-		local entry = packet[i]
-		s[i] = (type(entry) == "table") and Inventory.Deserialize(entry) or nil
+		local entry = (type(packet[i]) == "table") and packet[i] or nil
+		local existing = s[i]
+
+		if not entry then
+			if existing then
+				s[i] = nil
+				structural = true
+			end
+		elseif existing and existing.id == entry.id and existing.class == entry.class then
+			existing.ammo    = entry.ammo or existing.ammo
+			existing.reserve = entry.reserve or existing.reserve
+			if entry.data then existing.data = copyData(entry.data) end
+		else
+			s[i] = Inventory.Deserialize(entry)
+			structural = true
+		end
 	end
 
 	-- Or MigrateLegacy rebuilds from the stale strings next frame and wipes
 	-- whatever the server just told us we have.
 	state.primary, state.secondary, state.melee = nil, nil, nil
 
-	touch(state)
+	if structural then touch(state) end
 	Inventory.Pull(state)
 end
 --=====================================================================

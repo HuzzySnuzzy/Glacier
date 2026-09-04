@@ -522,7 +522,7 @@ end
 --=====================================================================
 
 local function walkRatio(speed)
-	return math.clamp(speed / math.max(Config.mv_walkSpeed or 16, 0.01), 0.1, 2)
+	return math.clamp(speed / math.max(Config.sv_maxspeed or 16, 0.01), 0.1, 2)
 end
 
 local function isCycleState(name)
@@ -1171,9 +1171,9 @@ local function updateViewmodel(viewPunch, deltaTime)
 	end
 
 	local offset = CFrame.new(
-		Config.vm_offsetX or 0,
-		Config.vm_offsetY or -1.5,
-		Config.vm_offsetZ or 0
+		Config.viewmodel_offset_x or 0,
+		Config.viewmodel_offset_y or -1.5,
+		Config.viewmodel_offset_z or 0
 	) * CFrame.Angles(
 		math.rad(Config.vm_pitch or 0),
 		math.rad(Config.vm_yaw or 0),
@@ -1318,7 +1318,7 @@ function Visuals.Update(deltaTime)
 		baseCamCFrame = baseCamCFrame * CFrame.Angles(0, 0, -math.rad(State.cameraRoll))
 	end
 	
-	cam.FieldOfView = Config.cam_fov or 70
+	cam.FieldOfView = Config.fov or 70
 	ViewBob.Update(deltaTime, speed)
 	ViewSway.Update(deltaTime, speed)
 

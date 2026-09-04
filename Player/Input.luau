@@ -1054,7 +1054,7 @@ local function bindMouseLook()
 		if UserInputService:GetFocusedTextBox() then return end
 		if input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
 
-		local sens = Config.cl_mouseSensitivity or 0.2
+		local sens = Config.sensitivity or 0.2
 		State.cameraX = (State.cameraX or 0) - input.Delta.X * sens
 		State.cameraY = math.clamp((State.cameraY or 0) - input.Delta.Y * sens, -89, 89)
 	end))

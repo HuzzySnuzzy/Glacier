@@ -271,7 +271,7 @@ end
 -- It has to come from there. The RawBody is ANCHORED and moved by CFrame, so
 -- its AssemblyLinearVelocity is permanently zero -- reading it (which this did)
 -- meant a weapon dropped at a full sprint was launched as if the player were
--- standing still, and promptly got left behind. Clamped to mv_maxVelocity on
+-- standing still, and promptly got left behind. Clamped to sv_maxvelocity on
 -- arrival, which bounds a lying client to what a fast legitimate one could
 -- already have.
 local function throwFrom(plr, carried)
@@ -303,7 +303,7 @@ local function throwFrom(plr, carried)
 			(math.random() - 0.5) * jitter)
 
 	if typeof(carried) == "Vector3" and carried.Magnitude > 0 then
-		local cap = Config.Get("mv_maxVelocity") or 320
+		local cap = Config.Get("sv_maxvelocity") or 320
 		if carried.Magnitude > cap then carried = carried.Unit * cap end
 		velocity += carried * (Config.Get("sv_dropInherit") or 1)
 	end

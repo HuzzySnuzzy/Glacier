@@ -86,10 +86,19 @@ end
 local pendingLoadHere = false
 local loadHereBusy = false
 
+-- Raised by the command below rather than by a cvar write. loadhere and unload
+-- are VERBS -- `loadhere` should place you, not need `loadhere 1` and then read
+-- back as a setting that is somehow false again afterwards.
+--
+-- Still a latch and not a direct call: Character.Spawn yields, and the command
+-- can run from the console thread or off a bind, neither of which should be
+-- left waiting on a spawn.
+local function requestLoadHere()
+	pendingLoadHere = true
+end
+
 Config.OnChange("loadhere", function(value)
-	-- Don't spawn from inside Config.Set: it can be called from the console
-	-- thread or the SyncConfig remote, and Character.Spawn may yield.
-	-- Just raise the flag; Heartbeat drains it.
+	-- The old cvar spelling still works for anything already bound to it.
 	if value == true then
 		pendingLoadHere = true
 	end
@@ -152,6 +161,10 @@ end
 local pendingUnload = false
 local unloadBusy = false
 
+local function requestUnload()
+	pendingUnload = true
+end
+
 Config.OnChange("unload", function(value)
 	if value == true then
 		pendingUnload = true
@@ -185,12 +198,40 @@ local function doUnload()
 	end
 end
 
+--=====================================================================
+-- loadhere / unload, as commands
+--=====================================================================
+-- They were cvars used as latches, which the Config header itself calls out as
+-- the wrong shape: "verbs stored as state". As commands they take no argument
+-- and stop pretending to hold a value.
+--
+-- loadhere_matchEye and unload_keepCamera stay cvars -- those really are
+-- settings, and they are read at the moment the verb runs.
+
+Config.Command("loadhere", {
+	args = {},
+	flag = Config.FCVAR.CHEAT,
+	help = "place your body where you are looking",
+	run = function(ctx)
+		requestLoadHere()
+		if ctx and ctx.reply then ctx.reply("[loadhere] placing") end
+	end,
+})
+
+Config.Command("unload", {
+	args = {},
+	flag = Config.FCVAR.CHEAT,
+	help = "destroy your body and drop to spectate",
+	run = function(ctx)
+		requestUnload()
+		if ctx and ctx.reply then ctx.reply("[unload] unloading") end
+	end,
+})
+
 RunService.Heartbeat:Connect(function()
 	if not pendingUnload or unloadBusy then return end
 	pendingUnload = false
 	unloadBusy = true
-
-	Config.Values.unload = false
 
 	task.spawn(function()
 		local ok, err = pcall(doUnload)
@@ -217,10 +258,6 @@ RunService.Heartbeat:Connect(function()
 	if not pendingLoadHere or loadHereBusy then return end
 	pendingLoadHere = false
 	loadHereBusy = true
-
-	-- Reset the latch directly on Values: no print spam, no listener re-entry,
-	-- and no cheat-lock check on a value we're only ever clearing.
-	Config.Values.loadhere = false
 
 	task.spawn(function()
 		local ok, err = pcall(doLoadHere)

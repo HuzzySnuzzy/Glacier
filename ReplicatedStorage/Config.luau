@@ -53,30 +53,30 @@ end
 -- REPLICATED + CHEAT throughout: the client predicts movement locally, so it
 -- needs the same numbers the server validates against.
 
-Define("mv_walkSpeed", 22.7, FCVAR.REPLICATED + FCVAR.CHEAT)
-Define("mv_walkKeySpeed", 11, FCVAR.REPLICATED + FCVAR.CHEAT)
-Define("mv_crouchSpeed", 7.5, FCVAR.REPLICATED + FCVAR.CHEAT) -- ~0.33x walk
+Define("sv_maxspeed", 22.7, FCVAR.REPLICATED + FCVAR.CHEAT)
+Define("sv_walkspeed", 11, FCVAR.REPLICATED + FCVAR.CHEAT)
+Define("sv_duckspeed", 7.5, FCVAR.REPLICATED + FCVAR.CHEAT) -- ~0.33x walk
 Define("mv_proneSpeed", 9, FCVAR.REPLICATED + FCVAR.CHEAT)
 
-Define("mv_groundAcceleration", 5, FCVAR.REPLICATED + FCVAR.CHEAT)   -- sv_accelerate 5
-Define("mv_airAcceleration", 10, FCVAR.REPLICATED + FCVAR.CHEAT)     -- sv_airaccelerate 10
-Define("mv_airSpeedCap", 2.72, FCVAR.REPLICATED + FCVAR.CHEAT)       -- 30 units
-Define("mv_groundFriction", 4, FCVAR.REPLICATED + FCVAR.CHEAT)       -- sv_friction 4
-Define("mv_stopSpeed", 9.1, FCVAR.REPLICATED + FCVAR.CHEAT)          -- sv_stopspeed 100
+Define("sv_accelerate", 5, FCVAR.REPLICATED + FCVAR.CHEAT)   -- sv_accelerate 5
+Define("sv_airaccelerate", 10, FCVAR.REPLICATED + FCVAR.CHEAT)     -- sv_airaccelerate 10
+Define("sv_air_max_wishspeed", 2.72, FCVAR.REPLICATED + FCVAR.CHEAT)       -- 30 units
+Define("sv_friction", 4, FCVAR.REPLICATED + FCVAR.CHEAT)       -- sv_friction 4
+Define("sv_stopspeed", 9.1, FCVAR.REPLICATED + FCVAR.CHEAT)          -- sv_stopspeed 100
 Define("mv_landFrictionMult", 1.5, FCVAR.REPLICATED + FCVAR.CHEAT)   -- extra bite on the landing tick
 
-Define("mv_gravity", 72.7, FCVAR.REPLICATED)              -- sv_gravity 800
-Define("mv_jumpForce", 24.4, FCVAR.REPLICATED)            -- 268 units; apex = v^2/2g = 4.09 studs
-Define("mv_maxFallSpeed", 181, FCVAR.REPLICATED)          -- terminal velocity, 2000 units
-Define("mv_maxStepHeight", 1.63, FCVAR.REPLICATED)        -- 18 units
+Define("sv_gravity", 72.7, FCVAR.REPLICATED)              -- sv_gravity 800
+Define("sv_jump_impulse", 24.4, FCVAR.REPLICATED)            -- 268 units; apex = v^2/2g = 4.09 studs
+Define("sv_maxfallspeed", 181, FCVAR.REPLICATED)          -- terminal velocity, 2000 units
+Define("sv_stepsize", 1.63, FCVAR.REPLICATED)        -- 18 units
 
 Define("mv_surfOverbounce", 1.0, FCVAR.REPLICATED)        -- 1.0 exactly; anything more mints speed
 Define("mv_maxHorizontalSpeed", 0, FCVAR.REPLICATED)      -- 0 = uncapped
 
 -- sv_maxvelocity 3500. Source clamps each AXIS independently rather than the
 -- magnitude, so a diagonal legitimately reaches cap * sqrt(2). Distinct from
--- mv_maxFallSpeed, which is the tighter terminal-velocity clamp on Y alone.
-Define("mv_maxVelocity", 320, FCVAR.REPLICATED + FCVAR.CHEAT)
+-- sv_maxfallspeed, which is the tighter terminal-velocity clamp on Y alone.
+Define("sv_maxvelocity", 320, FCVAR.REPLICATED + FCVAR.CHEAT)
 
 -- Source steps DOWN only a fraction of max step height; below that you enter
 -- air-move and let gravity do it. 1.0 keeps the current glued-to-slopes feel.
@@ -92,7 +92,7 @@ Define("mv_slopeBoostFix", false, FCVAR.REPLICATED + FCVAR.CHEAT)
 -- surface's value, which is why ice is slippery to stop on AND slow to get
 -- moving on. Roblox Plastic sits at 0.3 friction, so that is our stand-in for
 -- Source's 1.0 reference.
-Define("mv_surfaceFriction", true, FCVAR.REPLICATED)
+Define("sv_surfacefriction", true, FCVAR.REPLICATED)
 Define("mv_surfaceFrictionRef", 0.3, FCVAR.REPLICATED + FCVAR.CHEAT)
 Define("mv_minSurfaceFriction", 0.1, FCVAR.REPLICATED + FCVAR.CHEAT) -- floor; ice never goes frictionless
 
@@ -100,7 +100,7 @@ Define("mv_minSurfaceFriction", 0.1, FCVAR.REPLICATED + FCVAR.CHEAT) -- floor; i
 -- Doubled friction when there's nothing under the point ahead of your feet.
 -- This is the entire reason Source players stop on a crate rim instead of
 -- sliding off it. Set to 1 to disable.
-Define("mv_edgeFriction", 2.0, FCVAR.REPLICATED + FCVAR.CHEAT)
+Define("sv_edgefriction", 2.0, FCVAR.REPLICATED + FCVAR.CHEAT)
 Define("mv_edgeFrictionDist", 1.45, FCVAR.REPLICATED + FCVAR.CHEAT)   -- 16 units ahead
 Define("mv_edgeFrictionHeight", 3.1, FCVAR.REPLICATED + FCVAR.CHEAT)  -- 34 units of probe depth
 Define("mv_edgeFrictionOnlyWhenBraking", true, FCVAR.REPLICATED)      -- PB behaviour; GoldSrc applied it always
@@ -133,21 +133,21 @@ Define("mv_ladderGrabRange", 0.6, FCVAR.REPLICATED + FCVAR.CHEAT)    -- studs of
 -- because you're still inside the grab volume.
 Define("mv_ladderTimeout", 0.2, FCVAR.REPLICATED + FCVAR.CHEAT)
 
-Define("mv_noclipSpeed", 45, FCVAR.CHEAT)
+Define("sv_noclipspeed", 45, FCVAR.CHEAT)
 
 --=====================================================================
 -- MOVEMENT TOGGLES
 --=====================================================================
 
-Define("mv_autoBhop", false, FCVAR.REPLICATED + FCVAR.CHEAT)
+Define("sv_autobunnyhopping", false, FCVAR.REPLICATED + FCVAR.CHEAT)
 Define("mv_crouchHold", true, FCVAR.CLIENT)               -- false = toggle crouch
 Define("mv_walkKeyToggle", false, FCVAR.CLIENT)           -- false = hold to walk
 -- Per-weapon movement speed (CS:GO MaxPlayerSpeed). Each weapon module may
 -- carry maxPlayerSpeed in studs/second; the held weapon's value becomes a
--- ratio of mv_walkSpeed and scales every stance with it. A knife runs at the
+-- ratio of sv_maxspeed and scales every stance with it. A knife runs at the
 -- full 250 units, a rifle at 215, a Negev at 150 -- which is what makes
 -- switching to the knife to rotate an actual decision. Off = every weapon
--- moves at mv_walkSpeed.
+-- moves at sv_maxspeed.
 Define("mv_weaponSpeed", true, FCVAR.REPLICATED)
 
 Define("mv_canWalk", true, FCVAR.REPLICATED)
@@ -220,7 +220,7 @@ Define("mv_strafeAssist", 0, FCVAR.REPLICATED + FCVAR.CHEAT)
 -- expressed as a FRACTION of sv_staminamax, and recovery in stamina per
 -- second; CS:GO's internal float scaling is not reproduced exactly.
 
-Define("mv_stamina", false, FCVAR.REPLICATED + FCVAR.CHEAT)  -- master toggle
+Define("sv_stamina", false, FCVAR.REPLICATED + FCVAR.CHEAT)  -- master toggle
 Define("sv_staminamax", 80, FCVAR.REPLICATED + FCVAR.CHEAT)
 Define("sv_staminajumpcost", 0.08, FCVAR.REPLICATED + FCVAR.CHEAT)   -- per jump
 Define("sv_staminalandcost", 0.05, FCVAR.REPLICATED + FCVAR.CHEAT)   -- per landing
@@ -242,8 +242,8 @@ Define("sv_MaxCatchupSteps", 20, FCVAR.REPLICATED)        -- accumulator clamp; 
 -- CAMERA
 --=====================================================================
 
-Define("cam_fov", 80, FCVAR.CLIENT)
-Define("cl_mouseSensitivity", 0.2, FCVAR.CLIENT)
+Define("fov", 80, FCVAR.CLIENT)
+Define("sensitivity", 0.2, FCVAR.CLIENT)
 
 -- REPLICATED as well as CHEAT: eye height is a wallhack vector, and CHEAT
 -- alone only holds while sv_cheats is 0.
@@ -267,8 +267,8 @@ Define("cl_idleScale", 0, FCVAR.CLIENT)
 -- Master amplitude over the Source bob term, applied AFTER the (-7,+4) unit
 -- clamp so it can exceed it without clipping the sine. 1.0 = Source-exact,
 -- which reads as nearly nothing at this FOV and viewmodel distance.
-Define("cl_bobAmtVert", 2.5, FCVAR.CLIENT)
-Define("cl_bobAmtLat", 2.5, FCVAR.CLIENT)
+Define("cl_bobamt_vert", 2.5, FCVAR.CLIENT)
+Define("cl_bobamt_lat", 2.5, FCVAR.CLIENT)
 
 -- Source translates the gun by only 0.1x the bob and lets the ANGLES carry
 -- the motion. Faithful, and invisible here. This scales translation alone,
@@ -280,7 +280,7 @@ Define("cl_bobTrans", 3.0, FCVAR.CLIENT)
 -- so the gun sat at exactly the same height standing still and sprinting.
 -- 0.03 is the settle this file's own note recommends; raise toward 0.06 for
 -- something closer to CS:GO's droop.
-Define("cl_bobLowerAmt", 0.03, FCVAR.CLIENT)
+Define("cl_bob_lower_amt", 0.03, FCVAR.CLIENT)
 
 -- Set to walk speed, not 320 units. Source's 320 leaves a running player at a
 -- 0.78 ratio, which stretches every cycle by 28%. At walk speed the ratio
@@ -290,10 +290,10 @@ Define("cl_bobSpeedSlew", 60, FCVAR.CLIENT)           -- Source's 320u/s^2 takes
 Define("cl_bobInAir", true, FCVAR.CLIENT)
 Define("cl_bobCamera", false, FCVAR.CLIENT)           -- true restores GoldSrc camera bob
 
-Define("cl_punchStiffness", 65, FCVAR.CLIENT)
-Define("cl_punchDamping", 9, FCVAR.CLIENT)
-
 -- PUNCH_SPRING_CONSTANT / PUNCH_DAMPING from CBasePlayer::DecayPunchAngle.
+-- Defined twice, identically, until now -- the second pair simply overwrote
+-- the first, so nothing behaved differently; it just read as though one of
+-- them meant something else.
 Define("cl_punchStiffness", 65, FCVAR.CLIENT)
 Define("cl_punchDamping", 9, FCVAR.CLIENT)
 
@@ -301,9 +301,9 @@ Define("cl_punchDamping", 9, FCVAR.CLIENT)
 -- VIEWMODEL
 --=====================================================================
 
-Define("vm_offsetX", 0, FCVAR.CLIENT)
-Define("vm_offsetY", -1.62, FCVAR.CLIENT)
-Define("vm_offsetZ", 0, FCVAR.CLIENT)
+Define("viewmodel_offset_x", 0, FCVAR.CLIENT)
+Define("viewmodel_offset_y", -1.62, FCVAR.CLIENT)
+Define("viewmodel_offset_z", 0, FCVAR.CLIENT)
 Define("vm_pitch", 0, FCVAR.CLIENT)
 Define("vm_yaw", 0, FCVAR.CLIENT)
 Define("vm_roll", 0, FCVAR.CLIENT)
@@ -457,11 +457,11 @@ Define("sv_pickupMax", 40, FCVAR.REPLICATED)        -- oldest is culled past thi
 
 Define("cl_crosshair", true, FCVAR.CLIENT)
 Define("cl_crosshairthickness", 2, FCVAR.CLIENT)
-Define("cl_crosshairlength", 7, FCVAR.CLIENT)
+Define("cl_crosshairsize", 7, FCVAR.CLIENT)
 Define("cl_crosshairgap", 4, FCVAR.CLIENT)
 Define("cl_crosshairalpha", 1, FCVAR.CLIENT)
 Define("cl_crosshairdot", false, FCVAR.CLIENT)
-Define("cl_crosshairoutline", true, FCVAR.CLIENT)
+Define("cl_crosshair_drawoutline", true, FCVAR.CLIENT)
 Define("cl_dynamiccrosshair", true, FCVAR.CLIENT)
 
 Define("cl_crosshaircolor", Color3.fromRGB(0, 255, 0), FCVAR.CLIENT)
@@ -489,7 +489,7 @@ Define("cl_bulletHoleTexture", "rbxassetid://5713307085", FCVAR.CLIENT)
 --=====================================================================
 
 Define("cl_soundsEnabled", true, FCVAR.CLIENT)
-Define("cl_soundVolume", 1, FCVAR.CLIENT)
+Define("volume", 1, FCVAR.CLIENT)
 Define("cl_weaponVolume", 1, FCVAR.CLIENT)
 Define("cl_jumpVolume", 0.5, FCVAR.CLIENT)
 Define("cl_landVolume", 0.6, FCVAR.CLIENT)
@@ -540,14 +540,14 @@ Define("mp_autoteambalance", true, FCVAR.REPLICATED)
 Define("mp_limitteams", 1, FCVAR.REPLICATED)       -- max size difference; 0 = no limit
 Define("mp_autojoin", true, FCVAR.REPLICATED)      -- false = players must pick a side
 Define("mp_respawn", false, FCVAR.REPLICATED)      -- true = deathmatch respawning
-Define("mp_respawnDelay", 3, FCVAR.REPLICATED)     -- only used when mp_respawn is true
-Define("mp_endRoundDelay", 5, FCVAR.REPLICATED)
+Define("mp_respawnwavetime", 3, FCVAR.REPLICATED)     -- only used when mp_respawn is true
+Define("mp_round_restart_delay", 5, FCVAR.REPLICATED)
 Define("mp_minPlayers", 2, FCVAR.REPLICATED)                    -- 1 = solo testing
 Define("mp_ignoreRoundWinConditions", false, FCVAR.REPLICATED)  -- rounds only end on the clock
-Define("mp_deathUnloadDelay", 0, FCVAR.REPLICATED)              -- corpse lingers before cleanup
+Define("mp_death_drop_time", 0, FCVAR.REPLICATED)              -- corpse lingers before cleanup
 
-Define("mp_warmupTime", 15, FCVAR.REPLICATED)        -- grace period AFTER enough players join
-Define("mp_warmupInfinite", false, FCVAR.REPLICATED) -- true = never leave warmup (map testing)
+Define("mp_warmuptime", 15, FCVAR.REPLICATED)        -- grace period AFTER enough players join
+Define("mp_warmup_pausetimer", false, FCVAR.REPLICATED) -- true = never leave warmup (map testing)
 Define("mp_warmupRespawnDelay", 1, FCVAR.REPLICATED)
 -- Read every frame by the client to gate input during freezetime. Persistent
 -- state, so a cvar is right here -- unlike spawn, which is a verb.
@@ -564,13 +564,13 @@ Define("mp_startmap", "Mirage", FCVAR.REPLICATED)   -- loaded once at boot
 -- ghosting the enemy team.
 Define("spec_everyone", true, FCVAR.REPLICATED)      -- false = same team only
 Define("spec_allowFreecam", true, FCVAR.REPLICATED)  -- false = roaming cam disabled
-Define("spec_deathCamTime", 1.5, FCVAR.REPLICATED)   -- SECONDS frozen before spectating starts
+Define("spec_freeze_time", 1.5, FCVAR.REPLICATED)   -- SECONDS frozen before spectating starts
 
 -- 0 = first person (in-eye), 1 = third person (chase), 2 = freecam (roaming)
 Define("spec_mode", 1, FCVAR.CLIENT)
 Define("spec_hud", true, FCVAR.CLIENT)
-Define("spec_fov", 0, FCVAR.CLIENT)                  -- 0 = inherit cam_fov
-Define("spec_mouseSensitivity", 0, FCVAR.CLIENT)     -- 0 = inherit cl_mouseSensitivity
+Define("spec_fov", 0, FCVAR.CLIENT)                  -- 0 = inherit fov
+Define("spec_mouseSensitivity", 0, FCVAR.CLIENT)     -- 0 = inherit sensitivity
 Define("spec_lerp", 18, FCVAR.CLIENT)                -- camera follow rate; 0 = snap (raw puppet jitter)
 Define("spec_cycleOnTargetLost", true, FCVAR.CLIENT) -- auto-advance when your target dies
 
@@ -613,11 +613,13 @@ Define("sv_debugSnapshotHz", 5, FCVAR.REPLICATED)         -- broadcast rate; 0 =
 --=====================================================================
 -- ENGINE DEVELOPMENT
 --=====================================================================
--- These four are verbs stored as state, which the ConVar/ConCommand split
--- below says they shouldn't be. Left as cvars because other modules poll
--- them; convert to Config.Command when you next touch the lifecycle code.
-Define("loadhere", false, FCVAR.CHEAT)
-Define("unload", false, FCVAR.CHEAT)
+-- loadhere and unload were cvars used as latches -- verbs stored as state,
+-- which the ConVar/ConCommand split below says they should not be. They are
+-- Config.Commands now, registered by Player, and take no argument: `loadhere`
+-- places you rather than `loadhere 1` leaving behind a setting that reads false
+-- a moment later.
+--
+-- The two below really are settings, read at the moment the verb runs.
 Define("loadhere_matchEye", true, FCVAR.CHEAT)
 Define("unload_keepCamera", true, FCVAR.CHEAT)
 
@@ -667,6 +669,22 @@ Define("host_timescale", 1, FCVAR.REPLICATED + FCVAR.CHEAT)
 Define("host_timescaleMin", 0.05, FCVAR.REPLICATED + FCVAR.CHEAT) -- hard floor; 0 stalls the accumulator entirely
 Define("host_timescaleHz", 20, FCVAR.REPLICATED + FCVAR.CHEAT)    -- network step rate during a ramp
 Define("sv_lockLoadout", false, FCVAR.REPLICATED + FCVAR.CHEAT)
+
+--=====================================================================
+-- FALL DAMAGE
+--=====================================================================
+-- CS's shape: nothing at all below a threshold, then linear in the excess.
+-- GoldSrc used (speed - 580) * 0.0605 against a 580 unit/s floor, which at 11
+-- units per stud is 52.7 studs/s -- about a four stud drop. The default here
+-- is that curve converted, so a two storey fall hurts and a jump does not.
+--
+-- The client owns the impact (it owns the movement), so it reports the landing
+-- speed and the SERVER decides the damage. The only thing a lying client can
+-- do with it is hurt itself.
+Define("sv_falldamage", true, FCVAR.REPLICATED)
+Define("sv_falldamage_threshold", 52.7, FCVAR.REPLICATED)  -- studs/s; 580 units
+Define("sv_falldamage_scale", 0.665, FCVAR.REPLICATED)     -- 0.0605 per unit, per stud
+Define("sv_falldamage_fatal", 0, FCVAR.REPLICATED)         -- studs/s that always kills; 0 = never
 
 
 --=====================================================================
@@ -1036,7 +1054,7 @@ local function runCommand(name, tokens, ctx)
 end
 
 -- Single entry point for a typed line. Dispatches to a command if one matches,
--- otherwise falls through to a cvar set, so `mv_gravity 50` still works.
+-- otherwise falls through to a cvar set, so `sv_gravity 50` still works.
 function Config.Exec(line, ctx)
 	ctx = ctx or {}
 	if type(line) ~= "string" then return false, "not a string" end
@@ -1141,278 +1159,17 @@ Config.Command("find", {
 })
 
 --=====================================================================
--- CVAR ALIASES  (Source / GoldSrc names over Glacier's own)
+-- ONE NAME PER THING
 --=====================================================================
--- Glacier's movement cvars are mv_* and measured in STUDS. Everything a CS
--- player already has muscle memory for is sv_* and measured in GoldSrc UNITS.
--- Renaming the engine's own tunables is off the table -- every module reads
--- mv_gravity by name -- so an alias is registered instead, as a COMMAND that
--- reads and writes the real cvar with the unit conversion applied:
+-- There used to be an alias layer here: Glacier's own mv_*/cam_*/vm_* names,
+-- with CS spellings registered as commands on top that read and wrote them.
+-- Two names for one number is two things to keep in your head, two things to
+-- search for, and two entries in every listing.
 --
---   sv_gravity          -> "sv_gravity" = "800"  ( mv_gravity 72.7 )
---   sv_gravity 400      -> mv_gravity = 36.3636
---
--- A command rather than a second cvar, for two reasons: Config.List() stays
--- the list of things that actually exist, so a settings menu can't show the
--- same number twice under two names; and the console picks commands up for
--- autocomplete for free through OnCommandsChanged.
---
--- VM OWNERSHIP: an alias onto a REPLICATED cvar registers on the SERVER ONLY.
--- runCommand rejects a REPLICATED command in the client VM rather than
--- forwarding it, so a client-side registration would answer "server-only",
--- while NO local entry at all makes the console forward the whole line to the
--- server -- which is exactly how loadmap already reaches it.
-
-Config.Aliases = {}   -- [alias] = { target = key, scale = n }
-
--- 1 stud ~ 11 GoldSrc units, the same conversion the comments above use.
-local UNITS_PER_STUD = 11
-Config.UNITS_PER_STUD = UNITS_PER_STUD
-
--- 800 units of gravity divided by 11 and multiplied back is 799.9999...;
--- printing that as the value of sv_gravity would look like a rounding bug.
-local function tidy(n)
-	if typeof(n) ~= "number" then return n end
-	return math.floor(n * 10000 + 0.5) / 10000
-end
-
-local function aliasReport(name, target, scale, isNumber)
-	local raw = Config.Values[target]
-	local shown = isNumber and tidy(raw / scale) or raw
-	return ('"%s" = "%s"  ( %s %s )'):format(name, tostring(shown), target, tostring(raw))
-end
-
--- opts = { scale = number, flag = number, help = string }
---   aliasValue * scale = engineValue
--- so a cvar held in studs and typed in GoldSrc units takes scale 1/11.
-function Config.Alias(name, target, opts)
-	opts = opts or {}
-
-	if Config.Values[target] == nil then
-		warn(("[Config] alias '%s' points at unknown cvar '%s'."):format(name, tostring(target)))
-		return
-	end
-	if Config.Values[name] ~= nil then
-		warn(("[Config] '%s' is already a cvar; it cannot also be an alias."):format(name))
-		return
-	end
-
-	local flag = opts.flag or Config.Flags[target] or FCVAR.CLIENT
-
-	-- See VM OWNERSHIP above. Returning quietly is the point: the client is
-	-- meant to end up with no entry for this name.
-	if not isServer and bit32.band(flag, FCVAR.REPLICATED) ~= 0 then
-		return
-	end
-
-	local scale = opts.scale or 1
-	local isNumber = typeof(Config.Values[target]) == "number"
-	Config.Aliases[name] = { target = target, scale = scale }
-
-	Config.Command(name, {
-		args = { "string?" },
-		flag = flag,
-		help = opts.help or (scale == 1
-			and ("alias of " .. target)
-			or ("alias of %s, in GoldSrc units"):format(target)),
-		run = function(ctx, value)
-			if value == nil then
-				reply(ctx, aliasReport(name, target, scale, isNumber))
-				return true
-			end
-
-			local converted = value
-			if isNumber then
-				local n = tonumber(value)
-				if not n then
-					return false, ("%s: expected a number, got '%s'"):format(name, tostring(value))
-				end
-				converted = n * scale
-			end
-
-			local ok, reason = Config.Set(target, converted, ctx.forceOverride)
-			if not ok then return false, reason end
-
-			reply(ctx, aliasReport(name, target, scale, isNumber))
-			return true
-		end,
-	})
-end
-
-local GOLDSRC = 1 / UNITS_PER_STUD
-
---------------------------------------------------------------
--- movement  (server-owned: every target below is REPLICATED)
---------------------------------------------------------------
-
-Config.Alias("sv_gravity",            "mv_gravity",             { scale = GOLDSRC })
-Config.Alias("sv_maxspeed",           "mv_walkSpeed",           { scale = GOLDSRC })
-Config.Alias("sv_stopspeed",          "mv_stopSpeed",           { scale = GOLDSRC })
-Config.Alias("sv_maxvelocity",        "mv_maxVelocity",         { scale = GOLDSRC })
-Config.Alias("sv_stepsize",           "mv_maxStepHeight",       { scale = GOLDSRC })
-Config.Alias("sv_jump_impulse",       "mv_jumpForce",           { scale = GOLDSRC })
-Config.Alias("sv_air_max_wishspeed",  "mv_airSpeedCap",         { scale = GOLDSRC })
-Config.Alias("sv_accelerate",         "mv_groundAcceleration")
-Config.Alias("sv_airaccelerate",      "mv_airAcceleration")
-Config.Alias("sv_friction",           "mv_groundFriction")
-Config.Alias("sv_edgefriction",       "mv_edgeFriction")
-Config.Alias("sv_noclipspeed",        "mv_noclipSpeed",         { scale = GOLDSRC })
-
--- Both spellings exist in the wild -- GoldSrc/CSS shipped the first, CS:GO the
--- second -- and players type whichever they learned.
-Config.Alias("sv_enablebunnyhopping", "mv_autoBhop")
-Config.Alias("sv_autobunnyhopping",   "mv_autoBhop")
-
---------------------------------------------------------------
--- match rules  (server-owned)
---------------------------------------------------------------
-
-Config.Alias("mp_warmuptime",          "mp_warmupTime")
-Config.Alias("mp_warmup_pausetimer",   "mp_warmupInfinite")
-Config.Alias("mp_round_restart_delay", "mp_endRoundDelay")
-Config.Alias("mp_respawnwavetime",     "mp_respawnDelay")
-Config.Alias("spec_freeze_time",       "spec_deathCamTime")
-
---------------------------------------------------------------
--- client  (registered in BOTH VMs; these targets are FCVAR.CLIENT)
---------------------------------------------------------------
-
-Config.Alias("fov",                    "cam_fov")
-Config.Alias("cl_crosshairsize",       "cl_crosshairlength")
-Config.Alias("cl_crosshair_drawoutline", "cl_crosshairoutline")
-Config.Alias("cl_bobamt_vert",         "cl_bobAmtVert")
-Config.Alias("cl_bobamt_lat",          "cl_bobAmtLat")
-Config.Alias("viewmodel_offset_x",     "vm_offsetX")
-Config.Alias("viewmodel_offset_y",     "vm_offsetY")
-Config.Alias("viewmodel_offset_z",     "vm_offsetZ")
-Config.Alias("volume",                 "cl_soundVolume")
-
--- CS ships sensitivity around 2.5 where this engine wants 0.25, so the alias
--- carries the factor rather than asking anyone to move a decimal point.
-Config.Alias("sensitivity",            "cl_mouseSensitivity", { scale = 0.1 })
-
---=====================================================================
--- USER ALIASES  (Source `alias`)
---=====================================================================
--- alias bhop "+jump; -jump"
--- alias arms "primary ak47; secondary usp; melee knife"
---
--- The body is stored verbatim and re-tokenised on every run, so an alias that
--- names a command registered later still works once it exists.
-
-Config.UserAliases = {}
-
-local ALIAS_MAX_DEPTH = 8
-local aliasDepth = 0
-
--- ctx.exec is the console's own dispatcher when there is one. Going through it
--- matters on the client: Config.Exec resolves in THIS VM only, so an alias
--- containing a server command would die as "unknown command" instead of being
--- forwarded up the same path a typed line takes.
-local function execLine(line, ctx)
-	if ctx and type(ctx.exec) == "function" then
-		return ctx.exec(line)
-	end
-	return Config.Exec(line, ctx)
-end
-
-local function runAliasBody(body, ctx)
-	if aliasDepth >= ALIAS_MAX_DEPTH then
-		return false, ("alias recursion deeper than %d; stopped"):format(ALIAS_MAX_DEPTH)
-	end
-
-	aliasDepth += 1
-	-- Semicolons split here rather than in the console, because an alias body
-	-- arrives as ONE token stream and never passes the console's own splitter.
-	local ok, err = pcall(function()
-		for part in string.gmatch(body, "[^;]+") do
-			if not part:match("^%s*$") then
-				execLine((part:gsub("^%s+", ""):gsub("%s+$", "")), ctx)
-			end
-		end
-	end)
-	aliasDepth -= 1
-
-	if not ok then return false, tostring(err) end
-	return true
-end
-
-function Config.DefineAlias(name, body)
-	if type(name) ~= "string" or name == "" then return false, "expected an alias name" end
-	if Config.Values[name] ~= nil then
-		return false, ("'%s' is a cvar."):format(name)
-	end
-	-- Overwriting a real command with a macro is how you lose `kill` to a typo.
-	if Config.Commands[name] and not Config.UserAliases[name] then
-		return false, ("'%s' is already a command."):format(name)
-	end
-
-	Config.UserAliases[name] = body
-	Config.Command(name, {
-		args = {},
-		flag = FCVAR.CLIENT,
-		help = ("alias: %s"):format(body),
-		run = function(ctx)
-			return runAliasBody(Config.UserAliases[name] or "", ctx)
-		end,
-	})
-	return true
-end
-
-function Config.RemoveAlias(name)
-	if not Config.UserAliases[name] then return false end
-	Config.UserAliases[name] = nil
-	Config.RemoveCommand(name)
-	return true
-end
-
-Config.Command("alias", {
-	args = { "string?", "rest?" },
-	help = "define a command that runs other commands, separated by ';'",
-	run = function(ctx, name, body)
-		if name == nil then
-			local names = {}
-			for key in pairs(Config.UserAliases) do table.insert(names, key) end
-			if #names == 0 then reply(ctx, "no aliases defined") return true end
-			table.sort(names)
-
-			local lines = {}
-			for _, key in ipairs(names) do
-				table.insert(lines, ('%s = "%s"'):format(key, Config.UserAliases[key]))
-			end
-			reply(ctx, table.concat(lines, "\n"))
-			return true
-		end
-
-		if body == nil then
-			local existing = Config.UserAliases[name]
-			if not existing then return false, ("no alias named '%s'"):format(name) end
-			reply(ctx, ('%s = "%s"'):format(name, existing))
-			return true
-		end
-
-		-- Quoting the body the way Source does is habit for anyone coming from
-		-- CS, and the tokeniser has no concept of quotes, so strip them here.
-		body = body:gsub('^"(.*)"$', "%1")
-
-		local ok, reason = Config.DefineAlias(name, body)
-		if not ok then return false, reason end
-		reply(ctx, ('alias %s = "%s"'):format(name, body))
-		return true
-	end,
-})
-
-Config.Command("unalias", {
-	args = { "string" },
-	help = "remove an alias",
-	run = function(ctx, name)
-		if not Config.RemoveAlias(name) then
-			return false, ("no alias named '%s'"):format(name)
-		end
-		reply(ctx, ("removed alias %s"):format(name))
-		return true
-	end,
-})
+-- The cvars ARE the CS names now -- sv_gravity, sv_accelerate, sensitivity,
+-- fov, viewmodel_offset_x -- so there is nothing to translate. The user-macro
+-- `alias` command went with it; a bind carrying several commands does the same
+-- job and is already quote-aware.
 
 --=====================================================================
 -- MORE BUILT-INS  (Source names)
@@ -1504,7 +1261,7 @@ setmetatable(Config, {
 		return nil
 	end,
 
-	-- Triggers when a script tries to WRITE to a value (e.g., Config.mv_gravity = 50)
+	-- Triggers when a script tries to WRITE to a value (e.g., Config.sv_gravity = 50)
 	__newindex = function(self, key, value)
 		if self.Values[key] ~= nil then
 			-- Direct assignment has no console attached, so this is the one

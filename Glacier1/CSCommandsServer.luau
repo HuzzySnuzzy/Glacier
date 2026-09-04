@@ -482,8 +482,8 @@ Config.Command("mp_restartgame", {
 })
 
 -- changelevel is what a CS player types; loadmap is what this engine calls it.
--- Registered as its own command rather than a Config.Alias because an alias
--- targets a CVAR, and this is a verb.
+-- Both are kept because both are verbs -- unlike the cvars, which now carry
+-- their CS names outright rather than answering to two.
 local function changelevel(ctx, name)
 	local ok, reason = Config.Exec("loadmap " .. name, ctx)
 	if not ok then return false, reason end

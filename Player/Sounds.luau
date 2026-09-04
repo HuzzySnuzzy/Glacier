@@ -116,7 +116,7 @@ local function play(id, volume, pitch)
 
 	local p = acquire()
 	p.Asset = id
-	p.Volume = math.clamp(volume * (Config.cl_soundVolume or 1), 0, 10)
+	p.Volume = math.clamp(volume * (Config.volume or 1), 0, 10)
 	p.PlaybackSpeed = math.clamp(pitch, 0.05, 20)
 	-- AudioPlayer:Play() resumes from TimePosition; Sound:Play() rewound.
 	p.TimePosition = 0
@@ -161,7 +161,7 @@ function Sounds.PlayAt(key, position, pitch, volScale)
 	local p = slot.player
 	p.Asset = id
 	p.Volume = math.clamp(
-		def.volume * (volScale or 1) * (Config.cl_soundVolume or 1), 0, 10)
+		def.volume * (volScale or 1) * (Config.volume or 1), 0, 10)
 	p.PlaybackSpeed = math.clamp(pitch or 1, 0.05, 20)
 	p.TimePosition = 0
 	p:Play()
@@ -352,7 +352,7 @@ local function playFootstep(speed)
 
 	-- Quieter when crouched, louder the faster you move, with a little pitch
 	-- scatter so a long run doesn't sound mechanical.
-	local walk = Config.mv_walkSpeed
+	local walk = Config.sv_maxspeed
 	local vol = math.clamp(speed / walk, 0.25, 1.2) * crouchScale()
 
 	play(id, vol * (Config.cl_footstepVolume or 0.5), 0.9 + math.random() * 0.2)
@@ -379,7 +379,7 @@ function Sounds.Update(deltaTime)
 
 			-- Scale with impact so a hop off a kerb and a long fall differ.
 			local impact = math.abs(e.value or 0)
-			local ref = Config.mv_jumpForce
+			local ref = Config.sv_jump_impulse
 			local t = math.clamp(impact / (ref * 2), 0, 1)
 			if impact > ref * 0.3 then
 				local pitch = 1.1 - t * 0.3
@@ -426,7 +426,7 @@ function Sounds.Update(deltaTime)
 					SoundKeys.StepFor(State.groundMaterial),
 					feetPos(),
 					0.9 + math.random() * 0.2,
-					math.clamp(speed / Config.mv_walkSpeed, 0.3, 1) * crouchScale())
+					math.clamp(speed / Config.sv_maxspeed, 0.3, 1) * crouchScale())
 			end
 		end
 	else
@@ -453,11 +453,11 @@ function Sounds.Update(deltaTime)
 				runLoop:Play()
 			end
 			-- Pitch tracks speed so the stride rate matches how fast you move.
-			local ratio = (speed / Config.mv_walkSpeed) * (Config.cl_footstepRatio or 1)
+			local ratio = (speed / Config.sv_maxspeed) * (Config.cl_footstepRatio or 1)
 			runLoop.PlaybackSpeed = math.clamp(0.85 + ratio * 0.25, 0.85, 10.25)
-			local vol = math.clamp(speed / Config.mv_walkSpeed, 0.3, 1) * crouchScale()
+			local vol = math.clamp(speed / Config.sv_maxspeed, 0.3, 1) * crouchScale()
 			runLoop.Volume = math.clamp(
-				vol * (Config.cl_footstepVolume or 0.5) * (Config.cl_soundVolume or 1), 0, 10)
+				vol * (Config.cl_footstepVolume or 0.5) * (Config.volume or 1), 0, 10)
 		else
 			if runLoop.IsPlaying then runLoop:Stop() end
 		end

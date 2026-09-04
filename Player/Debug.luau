@@ -52,6 +52,7 @@ local lastStepCount, displayHz = 0, 0
 local peakSpeed = 0
 local displayScale = 40
 local weaponLabel
+local playerLabel
 local lastAmmo, lastWeaponId, shotTimes = nil, nil, {}
 local ceilingLabel
 
@@ -110,6 +111,52 @@ end
 
 local function yn(v)
 	return v and "yes" or "no"
+end
+
+--------------------------------------------------------------------
+-- COLOUR
+--------------------------------------------------------------------
+-- The HUD was one shade of white and one of amber, which makes every number
+-- cost a read. Colour carries the meaning that matters at a glance: how much
+-- health is left, whether a magazine is nearly out, how fast you are going.
+
+local PALETTE = {
+	good  = Color3.fromRGB(120, 230, 140),
+	warn  = Color3.fromRGB(255, 205, 90),
+	bad   = Color3.fromRGB(255, 100, 100),
+	cool  = Color3.fromRGB(120, 200, 255),
+	armor = Color3.fromRGB(130, 180, 255),
+	dim   = Color3.fromRGB(150, 155, 165),
+	name  = Color3.fromRGB(105, 180, 255),
+	value = Color3.fromRGB(245, 245, 245),
+}
+
+local function hex(c)
+	return ("#%02X%02X%02X"):format(
+		math.floor(c.R * 255 + 0.5), math.floor(c.G * 255 + 0.5), math.floor(c.B * 255 + 0.5))
+end
+
+local function paint(text, colour)
+	return ('<font color="%s">%s</font>'):format(hex(colour), tostring(text))
+end
+
+-- Green when full, amber past halfway down, red when it is nearly gone. Used
+-- for health, armour and the magazine alike -- one rule, so the colour means
+-- the same thing everywhere on the HUD.
+local function levelColour(fraction)
+	if fraction > 0.6 then return PALETTE.good end
+	if fraction > 0.25 then return PALETTE.warn end
+	return PALETTE.bad
+end
+
+-- Speed ramp: grey while stopped, white at a walk, amber at a run, cyan past
+-- it. Anything cyan is speed the movement code gave you rather than the
+-- keyboard, which is exactly what you are watching for on a bhop.
+local function speedColour(speed, walk)
+	if speed < 0.5 then return PALETTE.dim end
+	if speed < walk * 0.9 then return PALETTE.value end
+	if speed < walk * 1.15 then return PALETTE.warn end
+	return PALETTE.cool
 end
 
 --------------------------------------------------------------------
@@ -177,6 +224,13 @@ function Debug.Init()
 		Enum.TextXAlignment.Right)
 	weaponLabel.TextColor3 = Color3.fromRGB(255, 230, 180)
 
+	-- Bottom-left: who you are and what state you are in. Health and armour
+	-- are read from the PUPPET's attributes, which Health writes and Roblox
+	-- replicates -- so this is the server's own number, not a local guess.
+	playerLabel = makeLabel(gui, UDim2.new(0, 12, 1, -180), UDim2.new(0, 380, 0, 170), 15)
+	playerLabel.TextYAlignment = Enum.TextYAlignment.Bottom
+	playerLabel.RichText = true
+
 	-- Speed graph, above the speedometer
 	graphFrame = Instance.new("Frame")
 	graphFrame.Position = UDim2.new(0.5, -GRAPH_SAMPLES / 2, 1, -90)
@@ -227,6 +281,63 @@ end
 --------------------------------------------------------------------
 -- HELPERS
 --------------------------------------------------------------------
+
+--------------------------------------------------------------------
+-- PLAYER PANEL
+--------------------------------------------------------------------
+
+local function bar(fraction, width)
+	local filled = math.clamp(math.floor(fraction * width + 0.5), 0, width)
+	return string.rep("|", filled) .. string.rep(".", width - filled)
+end
+
+local function updatePlayerPanel()
+	local puppet = State.playerPuppet
+	local lines = {}
+
+	local name = plr.DisplayName ~= plr.Name
+		and ("%s (%s)"):format(plr.DisplayName, plr.Name) or plr.Name
+	table.insert(lines, paint(name, PALETTE.name)
+		.. paint(("   #%d"):format(plr.UserId), PALETTE.dim))
+
+	local team = plr.Team and plr.Team.Name or "none"
+	local alive = puppet and puppet:GetAttribute("Dead") ~= true and puppet:GetAttribute("Health")
+	table.insert(lines, paint("team ", PALETTE.dim) .. paint(team, PALETTE.value)
+		.. paint("   ", PALETTE.dim)
+		.. (alive and paint("ALIVE", PALETTE.good) or paint("DEAD", PALETTE.bad)))
+
+	if puppet then
+		local hp    = puppet:GetAttribute("Health") or 0
+		local maxHp = puppet:GetAttribute("MaxHealth") or 100
+		local armor = puppet:GetAttribute("Armor") or 0
+		local helmet = puppet:GetAttribute("Helmet") == true
+
+		local hpFrac = (maxHp > 0) and (hp / maxHp) or 0
+		table.insert(lines, paint("hp    ", PALETTE.dim)
+			.. paint(("%3d"):format(math.floor(hp)), levelColour(hpFrac))
+			.. paint("  " .. bar(hpFrac, 20), levelColour(hpFrac)))
+
+		local armorFrac = armor / 100
+		table.insert(lines, paint("armor ", PALETTE.dim)
+			.. paint(("%3d"):format(math.floor(armor)), armor > 0 and PALETTE.armor or PALETTE.dim)
+			.. paint("  " .. bar(armorFrac, 20), armor > 0 and PALETTE.armor or PALETTE.dim)
+			.. (helmet and paint("  HELMET", PALETTE.armor) or ""))
+	else
+		table.insert(lines, paint("no puppet -- unloaded or spectating", PALETTE.dim))
+	end
+
+	-- The two numbers that explain how the player is moving right now, and
+	-- neither is visible anywhere else on the HUD.
+	local scale = State.weaponSpeedScale or 1
+	table.insert(lines, paint("wpn speed ", PALETTE.dim)
+		.. paint(("x%.2f"):format(scale), scale < 0.999 and PALETTE.warn or PALETTE.value)
+		.. paint("   last land ", PALETTE.dim)
+		.. paint(("%.0f"):format(State.lastLandSpeed or 0),
+			(State.lastLandSpeed or 0) > num(Config.sv_falldamage_threshold, 52.7)
+				and PALETTE.bad or PALETTE.value))
+
+	playerLabel.Text = table.concat(lines, "\n")
+end
 
 local function drawVector(part, origin, direction, thickness)
 	local len = direction.Magnitude
@@ -319,9 +430,11 @@ function Debug.Update(deltaTime)
 	-- ---- speedometer + stats ----
 	if showHud and body then
 		speedLabel.Text = string.format("%.0f", speed)
-		speedLabel.TextColor3 = State.isGrounded
-			and Color3.fromRGB(255, 220, 120)
-			or Color3.fromRGB(140, 255, 180)
+		-- Coloured by how fast rather than by grounded: the interesting thing
+		-- about a number on a speedometer is the number.
+		speedLabel.TextColor3 = speedColour(speed, num(Config.sv_maxspeed, 22.7))
+
+		updatePlayerPanel()
 
 		local targetHz = num(Config.sv_PhysicsHz, 60)
 		local hzWarn = (displayHz < targetHz * 0.9) and "  <-- STARVED" or ""
@@ -396,7 +509,7 @@ function Debug.Update(deltaTime)
 				UserInputService:IsKeyDown(Enum.KeyCode.D) and "+" or "-",
 				tostring(UserInputService.WindowFocused)),
 			"",
-			string.format("strafe    %5.1f deg  proj %5.2f / %.2f", angle, proj, num(Config.mv_airSpeedCap)),
+			string.format("strafe    %5.1f deg  proj %5.2f / %.2f", angle, proj, num(Config.sv_air_max_wishspeed)),
 			"",
 			-- Bob is a viewmodel-only signal now. If these move and the gun
 			-- doesn't, the cause is downstream in ViewSway or the vm pivot,
@@ -408,10 +521,10 @@ function Debug.Update(deltaTime)
 			-- Effective friction, not just the cvar: surface and edge both
 			-- multiply it, and either can be the reason a stop feels wrong.
 			string.format("accel g%.1f a%.1f  fric %.1f x%.2f x%.2f",
-				num(Config.mv_groundAcceleration), num(Config.mv_airAcceleration),
-				num(Config.mv_groundFriction), surfFric, edgeFric),
+				num(Config.sv_accelerate), num(Config.sv_airaccelerate),
+				num(Config.sv_friction), surfFric, edgeFric),
 			string.format("grav %.1f  jump %.1f  step %.2f",
-				num(Config.mv_gravity), num(Config.mv_jumpForce), num(Config.mv_maxStepHeight)),
+				num(Config.sv_gravity), num(Config.sv_jump_impulse), num(Config.sv_stepsize)),
 		}, "\n")
 
 	elseif showHud then
@@ -458,7 +571,7 @@ function Debug.Update(deltaTime)
 
 			-- Auto ceiling: headroom above the peak, but never so low that the
 			-- walk-speed reference line falls off the top.
-			local walk = num(Config.mv_walkSpeed, 22.7)
+			local walk = num(Config.sv_maxspeed, 22.7)
 			local target = math.max(sampleMax * 1.15, walk * 1.25, 1)
 
 			local override = num(Config.cl_debugGraphScale, 0)
@@ -555,6 +668,14 @@ function Debug.Update(deltaTime)
 			overlay = ok and tostring(name) or "destroyed"
 		end
 
+		-- The magazine is what you look at this label for, so it picks the
+		-- colour -- same green/amber/red rule as health. A knife's magSize is
+		-- math.huge and has no fraction to take.
+		local mag = s and s.magSize
+		weaponLabel.TextColor3 = (type(mag) == "number" and mag < math.huge and mag > 0)
+			and levelColour(num(State.currentAmmo, 0) / mag)
+			or Color3.fromRGB(255, 230, 180)
+
 		weaponLabel.Text = table.concat({
 			s and string.format("%s  (slot %d)", tostring(s.name), int(State.activeSlot))
 				or string.format("NO WEAPON  (slot %s)", tostring(State.activeSlot)),
@@ -602,7 +723,7 @@ end
 function Debug.ResetPeak()
 	peakSpeed = 0
 	for i = 1, GRAPH_SAMPLES do samples[i] = 0 end
-	displayScale = num(Config.mv_walkSpeed, 22.7) * 1.25
+	displayScale = num(Config.sv_maxspeed, 22.7) * 1.25
 end
 
 --------------------------------------------------------------------

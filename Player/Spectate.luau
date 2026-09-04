@@ -266,7 +266,7 @@ end
 local function updateLook()
 	local delta = UserInputService:GetMouseDelta()
 	local sens = Config.spec_mouseSensitivity
-	if sens <= 0 then sens = Config.cl_mouseSensitivity end
+	if sens <= 0 then sens = Config.sensitivity end
 	camYaw -= delta.X * sens * SENS_SCALE
 	camPitch = math.clamp(camPitch - delta.Y * sens * SENS_SCALE, -89, 89)
 end
@@ -361,7 +361,7 @@ function Spectate.Start()
 	freeVel = Vector3.zero
 	freePos = camera.CFrame.Position
 	holdCFrame = camera.CFrame
-	holdUntil = os.clock() + math.max(Config.spec_deathCamTime, 0)
+	holdUntil = os.clock() + math.max(Config.spec_freeze_time, 0)
 	snapNext = true
 
 	local wanted = math.clamp(math.floor(Config.spec_mode), 0, 2)
@@ -377,7 +377,7 @@ function Spectate.Stop()
 
 	if camera then
 		camera.CameraType = savedCamType or Enum.CameraType.Scriptable
-		camera.FieldOfView = savedFov or Config.cam_fov
+		camera.FieldOfView = savedFov or Config.fov
 	end
 	UserInputService.MouseBehavior = savedMouseBehaviour or Enum.MouseBehavior.LockCenter
 
@@ -405,7 +405,7 @@ function Spectate.Update(dt)
 	end
 	if not Spectate.active then Spectate.Start() end
 
-	camera.FieldOfView = (Config.spec_fov > 0) and Config.spec_fov or Config.cam_fov
+	camera.FieldOfView = (Config.spec_fov > 0) and Config.spec_fov or Config.fov
 
 	-- Death cam: hold the last view for a beat before the observer takes over.
 	if os.clock() < holdUntil then
