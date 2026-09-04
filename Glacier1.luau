@@ -208,6 +208,17 @@ local ADMIN_USER_IDS = {
 	[-1] = true,   -- Studio solo play; REMOVE BEFORE SHIPPING
 }
 
+-- Published so another server script can apply the SAME rule rather than
+-- inventing a second admin list that drifts from this one.
+do
+	local Registry = require(script:WaitForChild("Registry"))
+	Registry.IsAdmin = function(plr)
+		return typeof(plr) == "Instance"
+			and plr:IsA("Player")
+			and ADMIN_USER_IDS[plr.UserId] == true
+	end
+end
+
 --=====================================================================
 -- BROADCAST PREFIX
 --=====================================================================

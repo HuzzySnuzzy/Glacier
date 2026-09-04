@@ -34,7 +34,24 @@ local function localId()
 	return "L" .. nextLocalId
 end
 
--- opts: { ammo, reserve, id }. Omitted ammo/reserve start full.
+-- A per-instance bag. Anything that belongs to THIS weapon rather than to its
+-- class lives here -- a skin, attachments, a kill count, an editor override --
+-- and it travels with the item through serialisation, a drop and a pickup.
+--
+-- Copied rather than referenced, or two items built from the same opts table
+-- would share one bag and editing either would edit both.
+local function copyData(source)
+	local out = {}
+	if type(source) ~= "table" then return out end
+	for key, value in pairs(source) do
+		out[key] = (type(value) == "table") and copyData(value) or value
+	end
+	return out
+end
+
+Inventory.CopyData = copyData
+
+-- opts: { ammo, reserve, id, data }. Omitted ammo/reserve start full.
 function Inventory.NewItem(name, opts)
 	local class, stats = WeaponRegistry.Resolve(name)
 	if not class then
@@ -50,12 +67,31 @@ function Inventory.NewItem(name, opts)
 	local usesAmmo = type(stats.magSize) == "number"
 
 	return {
+		-- The id is the weapon's IDENTITY. Carried through a drop and a pickup
+		-- rather than minted fresh, so the rifle you throw down is the same
+		-- rifle when someone takes it -- which is what lets anything else keyed
+		-- on the item survive the round trip.
 		id       = opts.id or localId(),
 		class    = class,
 		usesAmmo = usesAmmo,
 		ammo     = usesAmmo and (opts.ammo    or stats.magSize)    or 0,
 		reserve  = usesAmmo and (opts.reserve or stats.maxReserve) or 0,
+		data     = copyData(opts.data),
 	}
+end
+
+-- Per-instance field access, so callers do not have to know whether the bag
+-- exists yet.
+function Inventory.GetData(item, key)
+	if not (item and item.data) then return nil end
+	return item.data[key]
+end
+
+function Inventory.SetData(item, key, value)
+	if not item then return nil end
+	if not item.data then item.data = {} end
+	item.data[key] = value
+	return value
 end
 
 function Inventory.Stats(item)
@@ -271,13 +307,21 @@ end
 
 function Inventory.Serialize(item)
 	if not item then return nil end
-	return { id = item.id, class = item.class, ammo = item.ammo, reserve = item.reserve }
+	return {
+		id = item.id, class = item.class,
+		ammo = item.ammo, reserve = item.reserve,
+		-- Copied on the way out as well: the receiver owns its copy, and a
+		-- serialised packet that shared the live table would let a client
+		-- mutate the server's item by editing what it was handed.
+		data = next(item.data or {}) and copyData(item.data) or nil,
+	}
 end
 
 function Inventory.Deserialize(packet)
 	if type(packet) ~= "table" then return nil end
 	return Inventory.NewItem(packet.class, {
 		id = packet.id, ammo = packet.ammo, reserve = packet.reserve,
+		data = packet.data,
 	})
 end
 

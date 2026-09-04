@@ -184,6 +184,7 @@ local MODULES = {
 	AnimDefs       = { vm = "both",   get = sharedModule("AnimDefs") },
 	Recoil         = { vm = "both",   get = sharedModule("Recoil") },
 	SoundKeys      = { vm = "both",   get = sharedModule("SoundKeys") },
+	WeaponTuning   = { vm = "both",   get = sharedModule("WeaponTuning") },
 
 	-- client
 	State        = { vm = "client", get = clientModule("State") },
@@ -434,6 +435,7 @@ function Glacier.ClearSlot(plr, slot)     return lifecycle().ClearSlot(plr, slot
 function Glacier.GetSlot(plr, slot)       return lifecycle().GetSlot(plr, slot) end
 function Glacier.ActiveSlot(plr)          return lifecycle().ActiveSlot(plr) end
 function Glacier.SetActiveSlot(plr, slot) return lifecycle().SetActiveSlot(plr, slot) end
+function Glacier.PushInventory(plr)       return lifecycle().PushInventory(plr) end
 
 -- BindableFunctions rather than events, because the caller needs a value back.
 -- Returns cframe, part | nil, nil, reason.

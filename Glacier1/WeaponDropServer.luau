@@ -212,6 +212,7 @@ local function spawnPickup(item, cframe, velocity, owner)
 	object:SetAttribute("Class", item.class)
 	object:SetAttribute("Ammo", item.ammo or 0)
 	object:SetAttribute("Reserve", item.reserve or 0)
+	object:SetAttribute("ItemId", tostring(item.id))
 	object:SetAttribute("DroppedBy", owner and owner.UserId or 0)
 
 	object:PivotTo(cframe)   -- moves the hull and everything welded to it
@@ -233,11 +234,13 @@ local function spawnPickup(item, cframe, velocity, owner)
 		end
 	end
 
+	-- The WHOLE item is kept, not a copy of three of its fields. Its id is its
+	-- identity and its data bag is everything that belongs to this particular
+	-- weapon rather than to its class -- both have to come back out of the
+	-- world unchanged, or a pickup silently mints a different gun.
 	pickups[object] = {
+		item    = item,
 		class   = item.class,
-		ammo    = item.ammo or 0,
-		reserve = item.reserve or 0,
-		id      = item.id,
 		owner   = owner,
 		time    = os.clock(),
 	}
@@ -412,9 +415,13 @@ local function takePickup(plr, object, swap)
 		if taken and origin then spawnPickup(taken, origin, velocity, plr) end
 	end
 
+	-- id and data included: this is the same weapon coming back, not a fresh
+	-- one of the same class.
 	local ok, result = Glacier.GiveWeapon(plr, info.class, {
-		ammo    = info.ammo,
-		reserve = info.reserve,
+		id      = info.item.id,
+		ammo    = info.item.ammo,
+		reserve = info.item.reserve,
+		data    = info.item.data,
 	}, slot)
 
 	if not ok then
@@ -632,7 +639,7 @@ Config.Command("drops", {
 		for object, info in pairs(pickups) do
 			local position = positionOf(object)
 			table.insert(lines, ("%-12s %3d/%-3d  %-18s %s"):format(
-				info.class, info.ammo, info.reserve,
+				info.class, info.item.ammo or 0, info.item.reserve or 0,
 				position and ("%.0f %.0f %.0f"):format(position.X, position.Y, position.Z) or "?",
 				(from and position)
 					and ("%.1f studs away"):format((position - from).Magnitude) or ""))

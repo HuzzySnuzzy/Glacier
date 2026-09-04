@@ -29,8 +29,12 @@ local Debris            = game:GetService("Debris")
 
 local Config   = require(ReplicatedStorage:WaitForChild("Config"))
 local Recoil   = require(ReplicatedStorage:WaitForChild("Recoil"))
-local Health   = require(script.Parent:WaitForChild("Health"))
-local Registry = require(script.Parent:WaitForChild("Registry"))
+local Health    = require(script.Parent:WaitForChild("Health"))
+local Registry  = require(script.Parent:WaitForChild("Registry"))
+local Inventory = require(ReplicatedStorage:WaitForChild("Inventory"))
+-- Canonical class resolution: the packet carries the lowercase `name` while
+-- the item stores the ModuleScript's name, and comparing them raw never matches.
+local WeaponRegistry = require(ReplicatedStorage:WaitForChild("WeaponRegistry"))
 
 --=====================================================================
 -- REMOTES
@@ -115,6 +119,30 @@ local function newSession()
 		recoil    = Recoil.newState(),
 		salt      = rng:NextInteger(1, 2147483646),
 	}
+end
+
+-- The ITEM the player is holding, or nil.
+--
+-- Ammo used to live in session.ammo[weaponName], which is the wrong key twice
+-- over: it is per CLASS, so two rifles shared one magazine, and it is separate
+-- from the inventory item that a drop actually carries -- so the item's count
+-- was still whatever it was created with, and picking a weapon back up handed
+-- over a full magazine no matter how much of it had been fired.
+--
+-- The item is the only thing that survives a drop, so the item owns the ammo.
+local function heldItem(p, weaponName)
+	local Lifecycle = Registry.Lifecycle
+	local inv = Lifecycle and Lifecycle.GetInventory and Lifecycle.GetInventory(p)
+	local item = inv and Inventory.Active(inv) or nil
+	if not item then return nil end
+
+	-- The packet names a weapon; it has to be the one they are holding, or a
+	-- client could spend a pistol's magazine to fire a rifle.
+	if weaponName then
+		local class = WeaponRegistry.Class(weaponName)
+		if class and class ~= item.class then return nil end
+	end
+	return item
 end
 
 local function record(p, cf, crouched, grounded)
@@ -404,10 +432,21 @@ FireWeapon.OnServerEvent:Connect(function(p, packet)
 	session.lastFire = serverNow
 
 	-- ---- ammo ----
-	local ammo = session.ammo[packet.weapon]
-	if ammo == nil then ammo = s.magSize or 0 end
-	if ammo <= 0 then return reject() end
-	session.ammo[packet.weapon] = ammo - 1
+	-- Spent on the ITEM where there is one, so the count travels with the
+	-- weapon. session.ammo remains for anything with no inventory behind it --
+	-- a bot, a test dummy, a player firing mid-spawn.
+	local item = heldItem(p, packet.weapon)
+	if item then
+		if item.usesAmmo then
+			if (item.ammo or 0) <= 0 then return reject() end
+			item.ammo -= 1
+		end
+	else
+		local ammo = session.ammo[packet.weapon]
+		if ammo == nil then ammo = s.magSize or 0 end
+		if ammo <= 0 then return reject() end
+		session.ammo[packet.weapon] = ammo - 1
+	end
 
 	-- ---- rewind time ----
 	local shotTime = math.clamp(tonumber(packet.time) or serverNow,
@@ -559,7 +598,25 @@ ReloadWeapon.OnServerEvent:Connect(function(p, weaponName)
 	task.delay(s.reloadTime or 2, function()
 		local live = sessions[p]
 		if not live then return end
-		live.ammo[weaponName] = s.magSize
+
+		-- Moved out of the reserve rather than conjured, matching what the
+		-- client does in finishReload -- otherwise a reload here would refill
+		-- the magazine while the client's reserve went down, and the two would
+		-- disagree the moment the weapon was dropped.
+		local item = heldItem(p, weaponName)
+		if item and item.usesAmmo then
+			local need = (s.magSize or 0) - (item.ammo or 0)
+			local take = math.min(need, item.reserve or 0)
+			item.ammo = (item.ammo or 0) + take
+			item.reserve = (item.reserve or 0) - take
+
+			local Lifecycle = Registry.Lifecycle
+			if Lifecycle and Lifecycle.PushInventory then
+				Lifecycle.PushInventory(p)
+			end
+		else
+			live.ammo[weaponName] = s.magSize
+		end
 
 		-- Fresh mag, fresh spray. Push the reset so the client re-enters the
 		-- pattern at the same index we do.

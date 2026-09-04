@@ -501,6 +501,12 @@ function Lifecycle_API.GetInventory(plr)
 	return inventories[plr]
 end
 
+-- WeaponServer spends and refills ammo on the item itself, and needs a way to
+-- tell the client after a reload moves rounds out of the reserve.
+function Lifecycle_API.PushInventory(plr)
+	pushInventory(plr)
+end
+
 -- Reusing InventorySync rather than minting a second remote: it already
 -- carries inventory state, it's just been one-directional until now.
 InventorySync.OnServerEvent:Connect(function(plr, packet)
