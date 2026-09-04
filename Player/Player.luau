@@ -97,12 +97,7 @@ local function requestLoadHere()
 	pendingLoadHere = true
 end
 
-Config.OnChange("loadhere", function(value)
-	-- The old cvar spelling still works for anything already bound to it.
-	if value == true then
-		pendingLoadHere = true
-	end
-end)
+
 
 local function loadHereCFrame()
 	local cam = workspace.CurrentCamera
@@ -165,11 +160,7 @@ local function requestUnload()
 	pendingUnload = true
 end
 
-Config.OnChange("unload", function(value)
-	if value == true then
-		pendingUnload = true
-	end
-end)
+
 
 local function doUnload()
 	if not State.playerBody and not workspace:FindFirstChild(rawBodyName()) then

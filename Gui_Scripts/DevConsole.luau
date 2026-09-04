@@ -629,9 +629,50 @@ local MESSAGE_KIND = {
 	[Enum.MessageType.MessageError]   = "error",
 }
 
+-- Output that is Roblox's rather than this game's. Its CoreScripts and the
+-- Studio Assistant chat among themselves constantly, none of it is actionable
+-- from here, and it was most of what made startup unreadable.
+local ROBLOX_NOISE = {
+	"^%[Roblox%]",
+	"BuiltIn_",
+	"CorePackages",
+	"CoreScript",
+	"AssistantUI",
+	"rbxasset://",
+	"^Requested module",
+}
+
+local function isRobloxNoise(message)
+	for _, pattern in ipairs(ROBLOX_NOISE) do
+		if string.find(message, pattern) then return true end
+	end
+	return false
+end
+
+-- The console loads while the rest of the client is still starting, so it
+-- catches the whole boot in its first second. Ordinary output is held back
+-- until that settles; warnings and errors are NOT held, because those are
+-- exactly the ones worth seeing at startup.
+local spewReadyAt = os.clock() + math.max(Config.con_spewDelay or 3, 0)
+
 LogService.MessageOut:Connect(function(message, messageType)
 	if not Config.con_spew then return end
-	addLog(message, MESSAGE_KIND[messageType] or "spew")
+
+	local kind = MESSAGE_KIND[messageType] or "spew"
+	local serious = (kind == "warn" or kind == "error")
+
+	if not serious and os.clock() < spewReadyAt then return end
+	if not Config.con_spewRoblox and isRobloxNoise(message) then return end
+
+	-- One printed Instance can be two thousand characters and eat the whole
+	-- ring buffer on its own. Cut, with the real length said out loud so it is
+	-- clear something was cut rather than that the message ended oddly.
+	local limit = math.max(Config.con_maxlinelength or 300, 40)
+	if #message > limit then
+		message = message:sub(1, limit) .. ("  ... (%d chars)"):format(#message)
+	end
+
+	addLog(message, kind)
 end)
 
 --=====================================================================
@@ -1243,6 +1284,13 @@ end)
 --=====================================================================
 -- COMMANDS
 --=====================================================================
+
+-- Taken over rather than added alongside. If pConsole is still in the place,
+-- both scripts register these names and Config warns about the redefinition on
+-- every boot -- which is noise about a real problem, but noise all the same.
+for _, name in ipairs({ "clear", "echo", "toggleconsole", "con_reset" }) do
+	Config.RemoveCommand(name)
+end
 
 Config.Command("clear", {
 	args = {},

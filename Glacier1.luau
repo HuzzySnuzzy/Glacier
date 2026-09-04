@@ -208,15 +208,39 @@ local ADMIN_USER_IDS = {
 	[-1] = true,   -- Studio solo play; REMOVE BEFORE SHIPPING
 }
 
--- Published so another server script can apply the SAME rule rather than
--- inventing a second admin list that drifts from this one.
+--=====================================================================
+-- ADMIN IS OPT-IN
+--=====================================================================
+-- Being on the list is permission to elevate, not elevation. Until a listed
+-- player runs `admin`, every command they send is refused exactly as it would
+-- be for anyone else.
+--
+-- The point is not to stop the admin -- they can elevate in one word -- it is
+-- that an admin playing normally cannot fire a cheat command by muscle memory,
+-- a stale bind, or a pasted line, and that what they see of the game is what
+-- everyone else sees until they choose otherwise.
+
+local elevated = {}   -- [Player] = true
+
+Players.PlayerRemoving:Connect(function(plr) elevated[plr] = nil end)
+
+local function isListed(plr)
+	return typeof(plr) == "Instance"
+		and plr:IsA("Player")
+		and ADMIN_USER_IDS[plr.UserId] == true
+end
+
+-- Published so another server script applies the SAME rule rather than
+-- inventing a second admin list that drifts from this one. It reports
+-- ELEVATION, not membership -- otherwise wedit and the rest would still be
+-- open to a listed admin who had not elevated, and the opt-in would only
+-- cover the console.
 do
 	local Registry = require(script:WaitForChild("Registry"))
 	Registry.IsAdmin = function(plr)
-		return typeof(plr) == "Instance"
-			and plr:IsA("Player")
-			and ADMIN_USER_IDS[plr.UserId] == true
+		return isListed(plr) and elevated[plr] == true
 	end
+	Registry.IsListedAdmin = isListed
 end
 
 --=====================================================================
@@ -231,6 +255,50 @@ end
 --
 -- Admin-gated, obviously -- this reaches into settings players own.
 
+--=====================================================================
+-- ELEVATION COMMANDS
+--=====================================================================
+-- Registered rather than intercepted so the client console knows the names
+-- exists at all: DevConsole refuses to forward a line whose first word it has
+-- never heard of, so an unregistered `admin` would never leave the client.
+--
+-- REPLICATED, which is what makes the console forward them rather than trying
+-- to run them in the client VM where the elevation table does not exist.
+
+Config.Command("admin", {
+	args = {},
+	flag = FCVAR.REPLICATED,
+	help = "elevate yourself, if you are on the admin list",
+	run = function(ctx)
+		local plr = ctx and ctx.player
+		if not plr then return false, "admin needs a player" end
+
+		-- An unlisted player learns nothing from typing this that they would
+		-- not learn from typing any other command.
+		if not isListed(plr) then return false, "Access denied." end
+
+		elevated[plr] = true
+		if ctx.reply then
+			ctx.reply("Elevated. Commands are live -- `unadmin` to drop back.")
+		end
+		return true
+	end,
+})
+
+Config.Command("unadmin", {
+	args = {},
+	flag = FCVAR.REPLICATED,
+	help = "drop back to being an ordinary player",
+	run = function(ctx)
+		local plr = ctx and ctx.player
+		if not plr then return false, "unadmin needs a player" end
+
+		elevated[plr] = nil
+		if ctx.reply then ctx.reply("Dropped to player.") end
+		return true
+	end,
+})
+
 local BROADCAST_PREFIX = "!"
 
 -- Per-player debounce. An admin isn't a threat model, but a stuck key firing
@@ -241,12 +309,24 @@ local COMMAND_INTERVAL = 0.1
 Players.PlayerRemoving:Connect(function(plr) lastCommand[plr] = nil end)
 
 ConsoleEvent.OnServerEvent:Connect(function(player, commandString)
-	if not ADMIN_USER_IDS[player.UserId] then
-		ConsoleLog:FireClient(player, "Access denied.", true)
-		return
-	end
 	if type(commandString) ~= "string" then return end
 	if #commandString > 300 then return end
+
+	-- The two commands that have to pass the gate, or there would be no way
+	-- through it. They are ordinary Config.Commands (registered below), so
+	-- they autocomplete, appear in help, and have one implementation -- this
+	-- only decides that the gate does not apply to them.
+	local verb = string.match(commandString, "^%s*!?%s*(%S+)")
+	local isAuthCommand = (verb == "admin" or verb == "unadmin")
+
+	if not isAuthCommand and not elevated[player] then
+		-- Listed but not elevated gets told how; everyone else gets the same
+		-- flat refusal, and cannot tell the two apart.
+		ConsoleLog:FireClient(player, isListed(player)
+			and "Access denied. Run `admin` to elevate."
+			or "Access denied.", true)
+		return
+	end
 
 	local now = os.clock()
 	if lastCommand[player] and now - lastCommand[player] < COMMAND_INTERVAL then return end

@@ -634,6 +634,17 @@ Define("con_suggestions", 12, FCVAR.CLIENT)    -- rows in the autocomplete dropd
 -- spew. Does NOT capture server output -- that still needs ctx.reply.
 Define("con_spew", true, FCVAR.CLIENT)
 Define("con_timestamp", false, FCVAR.CLIENT)
+-- Startup is the noisiest moment a client ever has: Roblox's own CoreScripts
+-- talk to themselves, every module reports in, and one print of an Instance
+-- can be two thousand characters. Spew is held back for this long after the
+-- console loads so the first thing you see is a console, not a wall.
+Define("con_spewDelay", 3, FCVAR.CLIENT)
+-- Longer lines are cut. A printed Instance or table dump is unreadable in a
+-- 440px panel anyway, and one of them can fill the whole ring buffer.
+Define("con_maxlinelength", 300, FCVAR.CLIENT)
+-- Roblox's own engine and CoreScript output. Off by default: it is not this
+-- game's, you cannot act on it, and it is most of the startup flood.
+Define("con_spewRoblox", false, FCVAR.CLIENT)
 
 -- DevConsole: a command line across the top of the screen and a separate,
 -- draggable output panel. The panel lives in its own ScreenGui so it can stay
