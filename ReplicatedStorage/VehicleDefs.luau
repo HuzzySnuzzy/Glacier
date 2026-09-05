@@ -49,7 +49,7 @@ local DEFAULTS = {
 
 	drive        = 26,
 	reverse      = 12,
-	brake        = 42,
+	brake        = 30,
 	topSpeed     = 95,
 	topReverse   = 26,
 
@@ -57,23 +57,40 @@ local DEFAULTS = {
 	balance      = 0.44,
 	handbrakeGrip= 0.28,      -- rear grip multiplier while the handbrake is on
 
+	-- How hard the tyres fight sideways motion before they saturate. Low is
+	-- vague and floaty, high is darty; this is the "connected to the road"
+	-- number and it is separate from how much grip there is in total.
+	gripResponse = 6,
+
+	-- LOAD TRANSFER, as a fraction of grip moved front-to-rear by a full
+	-- braking or accelerating effort. This is the mechanism behind most of
+	-- what a heavy car feels like: braking loads the front and the car turns
+	-- in, power unloads it and the car washes wide, and lifting mid-corner
+	-- swings the tail. 0 makes the car handle identically whatever the
+	-- throttle is doing, which is what it did before this existed.
+	loadTransfer = 0.45,
+
+	-- Front grip lost at topSpeed. The fast-corner push that makes a heavy
+	-- car feel heavy rather than merely slow.
+	understeer   = 0.35,
+
 	steerAngle   = 34,
 	steerSpeed   = 55,
-	steerRate    = 6.5,       -- how fast the wheels turn toward the input
-	steerReturn  = 9,         -- and how fast they centre when you let go
+	steerRate    = 3.6,       -- how fast the wheels turn toward the input
+	steerReturn  = 6,         -- and how fast they centre when you let go
 
 	dragLinear   = 0.06,      -- rolling resistance, proportional to speed
 	-- dragQuad is DERIVED from drive and topSpeed, below. Do not author it.
 
-	suspension   = 1.1,       -- travel
-	springHz     = 2.1,       -- undamped natural frequency of the springs
-	springDamp   = 0.55,      -- 1 is critical; under it the car breathes
+	suspension   = 1.6,       -- travel
+	springHz     = 1.5,       -- undamped natural frequency of the springs
+	springDamp   = 0.42,      -- 1 is critical; under it the car breathes
 
 	wheelRadius  = 1.1,
 	wheelWidth   = 0.7,
 
-	bodyRoll     = 0.30,      -- degrees of lean per stud/s^2 of lateral accel
-	bodyPitch    = 0.22,      -- and of dive/squat per stud/s^2 forward
+	bodyRoll     = 0.55,      -- degrees of lean per stud/s^2 of lateral accel
+	bodyPitch    = 0.40,      -- and of dive/squat per stud/s^2 forward
 
 	restitution  = 0.25,      -- how much of a crash comes back as bounce
 	crashLoss    = 0.55,      -- and how much of the rest is simply eaten
@@ -119,7 +136,9 @@ VehicleDefs.Classes = {
 		grip       = 31,
 		balance    = 0.38,
 		steerAngle = 38,
-		bodyRoll   = 0.36,
+		steerRate  = 4.4,       -- lighter car, quicker rack
+		understeer = 0.24,      -- and it pushes less than the sedan
+		bodyRoll   = 0.44,
 	},
 
 	-- Heavy, tall, understeers, rolls a lot. Slow to stop, which is the point.
@@ -134,9 +153,13 @@ VehicleDefs.Classes = {
 		balance     = 0.54,
 		steerAngle  = 28,
 		steerSpeed  = 42,
+		steerRate   = 2.8,       -- slow, heavy rack
+		understeer  = 0.5,       -- and it pushes wide at anything like speed
+		loadTransfer = 0.6,      -- tall and heavy: the weight really moves
 		wheelRadius = 1.35,
-		bodyRoll    = 0.52,
-		bodyPitch   = 0.34,
+		suspension  = 2.1,
+		bodyRoll    = 0.85,
+		bodyPitch   = 0.5,
 	},
 }
 

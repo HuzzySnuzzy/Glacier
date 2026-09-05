@@ -8,8 +8,13 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local CollectionService = game:GetService("CollectionService")
+local Players           = game:GetService("Players")
 
 local Config = require(ReplicatedStorage:WaitForChild("Config"))
+-- Only used by the respawn-on-map-change pass at the bottom. Resolving the
+-- lifecycle is deferred inside Glacier, so requiring it here does not depend
+-- on PlayerLifecycleServer having started yet.
+local Glacier = require(ReplicatedStorage:WaitForChild("Glacier"))
 local MapsFolder = ReplicatedStorage:WaitForChild("Maps")
 
 local MAP_TAG = "GlacierMap"
@@ -244,6 +249,49 @@ Config.Command("maps", {
 		return true
 	end,
 })
+
+--=====================================================================
+-- RESPAWN ON MAP CHANGE
+--=====================================================================
+-- Every live body is standing in geometry that has just been deleted, at
+-- coordinates the new map has never heard of, and the spawn points they would
+-- have used went with it. Doing nothing leaves players floating in the void
+-- of the old map -- which is what happened before this existed.
+--
+-- HERE rather than in a gamemode, because it is true of every mode. A mode
+-- with its own opinion (a round system that reloads the map as part of
+-- starting a round and deploys everyone itself a moment later) sets
+-- mp_respawn_on_mapchange 0, which is one line in one place instead of every
+-- other mode having to remember to do this.
+--
+-- Deferred off the MapChanged thread. Respawn yields -- it tears down a body,
+-- resolves a spawn point and fetches an avatar -- and yielding inside a
+-- BindableEvent handler blocks every other listener behind it, including the
+-- collision generator that is trying to build the map these players are about
+-- to be placed on.
+local function respawnEveryone(map)
+	if not map then return end   -- a clear, not a load; nothing to spawn onto
+	if Config.Get("mp_respawn_on_mapchange") == false then return end
+
+	local reviveDead = Config.Get("mp_mapchange_revives_dead") == true
+
+	for _, plr in ipairs(Players:GetPlayers()) do
+		-- A player who was dead stays dead unless the cvar says otherwise: a
+		-- map change is not a free life, and a mode with a respawn timer has
+		-- its own idea of when they come back.
+		if reviveDead or Glacier.IsAlive(plr) then
+			task.spawn(function()
+				local ok, reason = Glacier.Respawn(plr)
+				if not ok then
+					warn(("[MapServer] respawn after map change failed for %s: %s")
+						:format(plr.Name, tostring(reason)))
+				end
+			end)
+		end
+	end
+end
+
+MapChanged.Event:Connect(respawnEveryone)
 
 --=====================================================================
 -- BOOT

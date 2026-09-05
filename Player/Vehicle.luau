@@ -512,21 +512,68 @@ local function step(s, dt)
 	--------------------------------------------------------------
 	-- The tyres resist sideways motion up to a limit and no further. Past the
 	-- limit the car slides -- which is not a failure mode, it is the feature.
+	--
+	-- The limit is not ONE number any more. It is split front and rear, and
+	-- the split moves with what the throttle is doing, because that is the
+	-- mechanism behind almost everything a heavy car does:
+	--
+	--   braking loads the front  -> it turns in, and the rear goes light
+	--   power unloads the front  -> it washes wide
+	--   lifting mid-corner       -> the load snaps forward and the tail comes
+	--                               round, with nothing in the code that
+	--                               mentions lifting
+	--
+	-- Before this, load transfer existed only as body roll -- the car LOOKED
+	-- like it was leaning and handled identically whatever the throttle did.
 	local lateralSpeed = vel:Dot(right)
 
 	if grounded then
 		local limit = def.grip * gripScale * groundFrac
-		if handbrake then limit *= def.handbrakeGrip end
+
+		-- accel so far is the drivetrain and the brakes and nothing else, so
+		-- this is exactly the longitudinal effort the tyres are being asked
+		-- for -- which is what moves the weight.
+		local longEffort = accel:Dot(forward)
+		local transfer = math.clamp(longEffort / math.max(def.grip * gripScale, 1), -1, 1)
+
+		local frontGrip = limit * (1 - transfer * def.loadTransfer)
+		local rearGrip  = limit * (1 + transfer * def.loadTransfer)
+
+		-- The front washes out with speed. A car that corners as hard at 90
+		-- as it does at 20 feels weightless however heavy the numbers say it
+		-- is; this is the push that makes speed cost something.
+		frontGrip *= 1 - def.understeer
+			* math.clamp(math.abs(roadSpeed) / math.max(def.topSpeed, 1), 0, 1)
+
+		-- The handbrake locks the REAR only. That asymmetry is the whole
+		-- trick: the front keeps steering while the back lets go.
+		if handbrake then rearGrip *= def.handbrakeGrip end
+
+		frontGrip = math.max(frontGrip, 0)
+		rearGrip = math.max(rearGrip, 0)
 
 		-- Proportional near zero so the car does not vibrate about straight
 		-- ahead, saturating at the limit so it can be broken loose.
-		local demand = -lateralSpeed * 8
-		local applied = math.clamp(demand, -limit, limit)
-		accel += right * applied
+		local demand = -lateralSpeed * def.gripResponse
+		local magnitude = math.abs(demand)
 
-		s.slip = math.abs(demand) > limit and (math.abs(demand) - limit) / limit or 0
+		-- The whole car resists with what both ends have between them, split
+		-- by balance -- but each END saturates on its own, and that is what
+		-- the yaw model below reads.
+		local total = frontGrip * (1 - def.balance) + rearGrip * def.balance
+		accel += right * math.clamp(demand, -total, total)
+
+		local function saturation(available)
+			if available <= 1e-3 then return 1 end
+			return math.max(magnitude - available, 0) / available
+		end
+
+		s.slipFront = saturation(frontGrip)
+		s.slipRear = saturation(rearGrip)
+		-- One number for the HUD and the old callers: whichever end is worse.
+		s.slip = math.max(s.slipFront, s.slipRear)
 	else
-		s.slip = 0
+		s.slip, s.slipFront, s.slipRear = 0, 0, 0
 	end
 
 	--------------------------------------------------------------
@@ -609,10 +656,20 @@ local function step(s, dt)
 		local wheelbase = s.rig.wheelbase
 		local yawRate = -(roadSpeed / wheelbase) * math.tan(math.rad(s.steer))
 
-		-- Oversteer: a sliding rear end keeps rotating past where the front
-		-- wheels are pointing. balance below 0.5 leans this way on purpose.
-		local oversteer = (0.5 - def.balance) * 2 * (s.slip or 0)
-		yawRate *= (1 + math.clamp(oversteer, -0.6, 1.4))
+		-- Understeer and oversteer are now separate things, because the two
+		-- ends of the car saturate separately.
+		--
+		-- A sliding FRONT turns less than the wheels are asking for: that is
+		-- what running wide in a fast corner is, and the car should feel like
+		-- it is refusing rather than like the wheel stopped working.
+		--
+		-- A sliding REAR keeps rotating past where the wheels point. balance
+		-- below 0.5 leans this way on purpose, and the handbrake gets there
+		-- immediately by cutting rear grip alone.
+		local understeer = math.clamp(s.slipFront or 0, 0, 1.5)
+		local oversteer = math.clamp(s.slipRear or 0, 0, 1.5) * (1.5 - def.balance)
+
+		yawRate *= math.clamp(1 - understeer * 0.55 + oversteer * 0.8, 0.15, 2.5)
 
 		s.yaw += yawRate * dt
 		s.yawRate = yawRate

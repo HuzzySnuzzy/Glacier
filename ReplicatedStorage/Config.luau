@@ -704,6 +704,26 @@ Define("sv_falldamage_scale", 1, FCVAR.REPLICATED)     -- multiplier over the wh
 
 
 --=====================================================================
+-- MAP CHANGE
+--=====================================================================
+-- A map change deletes the world every live body is standing in and every
+-- spawn point they would respawn at, so leaving people where they were means
+-- players floating in the void of the old geometry, holding the old map's
+-- weapons, at coordinates the new map has never heard of.
+--
+-- Engine-level rather than per-gamemode: it is true of every mode, and a mode
+-- that has its own opinion (a round system that reloads the map as part of
+-- starting a round, and deploys everyone itself a moment later) turns it off
+-- rather than every other mode having to remember to turn it on.
+Define("mp_respawn_on_mapchange", true, FCVAR.REPLICATED)
+
+-- What to do with someone who was dead when the map changed. Off by default:
+-- a map change is not a free life, and a mode with a respawn timer or a
+-- round-based deploy has its own idea about when they come back.
+Define("mp_mapchange_revives_dead", false, FCVAR.REPLICATED)
+
+
+--=====================================================================
 -- VEHICLES
 --=====================================================================
 -- The per-class handling numbers live in VehicleDefs, not here: there are

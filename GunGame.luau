@@ -69,6 +69,14 @@ local KNIFE_DEMOTES   = false  -- true = being knifed costs the victim a level
 
 local VERBOSE = false          -- per-kill and per-hit server logging
 
+-- The engine respawns everyone when the map changes, because for most modes a
+-- map change means every body is standing in deleted geometry. This mode
+-- reloads the map as part of starting a round and deploys everyone itself a
+-- moment later, so it opts out and keeps that ordering to itself. Without
+-- this it still happens to work -- wipeAllBodies runs first, so there is
+-- nobody alive to respawn -- but relying on that is relying on an accident.
+G.Set("mp_respawn_on_mapchange", false)
+
 --==========================================================
 -- Match cycle
 --==========================================================
@@ -262,7 +270,14 @@ end
 --==========================================================
 local function doSpawn(player)
 	if pending[player] then return false end
-	if matchOver or deploying then return false end
+	if matchOver or deploying then
+		-- Drop the latch on the way out. Leaving it high means the next
+		-- legitimate request is not a rising edge, and before this was a
+		-- direct call that was the end of the player's session -- they could
+		-- never spawn again, with the request flag stuck reading "true".
+		setPlayerSpawnReq:Fire(player, false)
+		return false
+	end
 	pending[player] = true
 
 	local myRound = roundId
@@ -337,11 +352,24 @@ end
 
 -- Routed through the spawn_Requested latch rather than calling doSpawn
 -- directly, so there is exactly one spawn path in the whole script.
+-- Forward-declared: deployAll below calls it and it is defined with the rest
+-- of the spawn-request handling, a couple of hundred lines further down.
+-- Declared ONCE here and assigned there with `function`, not `local function`
+-- -- a second `local` would shadow this one and every call above it would
+-- quietly find nil.
+local serviceSpawnRequest
+
 local function deployAll()
 	for _, p in ipairs(Players:GetPlayers()) do
 		if joined[p] and not G.RawBody(p) then
 			assignTeam(p)
 			setPlayerSpawnReq:Fire(p, true)
+			-- Serviced directly, not left to the flag's Changed. If a
+			-- player's flag were already high the raise above would be a
+			-- true-to-true write, which fires nothing -- and this is the
+			-- round-start path, so that player would sit out the entire
+			-- round with a flag that reads "requested".
+			serviceSpawnRequest(p)
 		end
 	end
 end
@@ -451,7 +479,58 @@ end
 -- Creating the flag through the tuner (rather than reaching into GT directly)
 -- keeps object creation in one place. Firing false also guarantees GT and the
 -- BoolValue exist before we try to connect to them.
+-- Everything the rising edge used to do, as a CALL. It has to be a call and
+-- not just a handler, because the edge is not reliable in either direction:
+--
+--   attachSpawnWatcher yields twice on WaitForChild before it connects, and
+--   in Studio the client can press JOIN inside that window. The flag goes
+--   true with nothing listening and the request is gone.
+--
+--   Setting a BoolValue to true when it is ALREADY true fires no Changed at
+--   all. doSpawn's early return on matchOver/deploying leaves the flag high,
+--   so from then on every request is a no-op and the player never spawns
+--   again. That is the "sometimes" in "sometimes my player doesn't spawn".
+--
+-- Idempotent by design: every reason to refuse is checked here, so calling it
+-- when there is nothing to do costs a few comparisons.
+function serviceSpawnRequest(player)
+	if player.Parent ~= Players then return end
+	if G.RawBody(player) then return end         -- already alive
+	if pending[player] then return end
+
+	if matchOver or deploying then
+		-- Intermission. Drop the latch rather than leaving it high: the flag
+		-- means "outstanding and actionable", and a high one that nothing
+		-- will act on is worse than no flag at all -- the next raise is not a
+		-- change, so it fires nothing. deployAll re-raises and services this
+		-- directly when the round starts.
+		setPlayerSpawnReq:Fire(player, false)
+		return
+	end
+
+	local until_ = deadUntil[player]
+	if until_ and os.clock() < until_ then
+		-- Respawn timer still running. Drop the latch and let the death
+		-- handler re-raise it when the timer expires.
+		setPlayerSpawnReq:Fire(player, false)
+		return
+	end
+
+	assignTeam(player)
+	-- doSpawn yields, and Changed handlers run on the signal's thread.
+	task.spawn(doSpawn, player)
+end
+
 local function attachSpawnWatcher(player)
+	-- Read any request that arrived BEFORE we got here, and read it before the
+	-- reset below wipes it. Firing false is what creates GT and the BoolValue
+	-- in the first place, so it cannot simply be moved -- but it also erases a
+	-- JOIN that landed while the player was still being set up, which is the
+	-- earliest of the three windows this function has to survive.
+	local existingGT = player:FindFirstChild("GT")
+	local existingFlag = existingGT and existingGT:FindFirstChild("spawn_Requested")
+	local requestedEarly = (existingFlag ~= nil) and existingFlag.Value == true
+
 	setPlayerSpawnReq:Fire(player, false)
 	setPlayerGGLevel:Fire(player, 1)
 
@@ -462,23 +541,17 @@ local function attachSpawnWatcher(player)
 
 	flag.Changed:Connect(function(value)
 		if not value then return end                 -- only act on the rising edge
-		if player.Parent ~= Players then return end
-		if matchOver or deploying then return end    -- intermission; deployAll will call us
-		if G.RawBody(player) then return end         -- already alive
-		if pending[player] then return end
-
-		local until_ = deadUntil[player]
-		if until_ and os.clock() < until_ then
-			-- Respawn timer still running. Reject and let the death handler
-			-- re-raise the flag when it expires.
-			setPlayerSpawnReq:Fire(player, false)
-			return
-		end
-
-		assignTeam(player)
-		-- doSpawn yields, and Changed handlers run on the signal's thread.
-		task.spawn(doSpawn, player)
+		serviceSpawnRequest(player)
 	end)
+
+	-- Requests that happened before there was anything to hear them: one from
+	-- before this function ran at all, one from during its two WaitForChilds.
+	-- In Studio those windows are most of the gap between pressing Play and
+	-- the first click, which is why this only failed "sometimes".
+	if requestedEarly or flag.Value then
+		setPlayerSpawnReq:Fire(player, true)
+		serviceSpawnRequest(player)
+	end
 end
 
 --==========================================================
@@ -497,11 +570,18 @@ end)
 -- Client pressed JOIN. The remote carries no data -- we only use it as a
 -- signal, then validate server-side and set the authoritative flag ourselves.
 RequestSpawn.OnServerEvent:Connect(function(player)
-	if not joined[player] then return end
-	if matchOver or deploying then return end
-	if G.RawBody(player) then return end
-	if pending[player] then return end
+	-- Recorded FIRST, and unconditionally. A JOIN can arrive before the join
+	-- handler has finished setting the player up, and the old code answered
+	-- that by returning -- dropping the request with nothing to retry it.
+	-- Written down instead, so attachSpawnWatcher finds it when it attaches.
 	setPlayerSpawnReq:Fire(player, true)
+	if not joined[player] then return end
+
+	-- Raised AND serviced directly. The flag is the authoritative state other
+	-- code reads; the direct call is what makes the request actually happen,
+	-- because a true-to-true write fires no Changed and would otherwise leave
+	-- the player stuck forever.
+	serviceSpawnRequest(player)
 end)
 
 Players.PlayerRemoving:Connect(function(player)
