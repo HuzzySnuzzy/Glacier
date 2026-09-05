@@ -1630,4 +1630,39 @@ function Vehicle.Init()
 	if sync then sync.OnClientEvent:Connect(pushObserved) end
 end
 
+--=====================================================================
+-- DIAGNOSTICS
+--=====================================================================
+-- CLIENT side, unlike vehicle_rig, because the effects only exist here: the
+-- server has never looked for an emitter and cannot tell you whether one was
+-- found. The two commands answer the two halves of the same question -- what
+-- the sim measured, and what the art turned into.
+
+Config.Command("vehicle_fx", {
+	args = {},
+	help = "print the sounds and emitters found on the car you are in",
+	run = function(ctx)
+		local model = seatModel
+		local rig = sim and sim.rig
+
+		-- Not driving: report whatever car is being watched, so this is
+		-- usable from a passenger seat or standing beside one.
+		if not (model and rig) then
+			for watched, entry in pairs(observed) do
+				if entry.rig then
+					model, rig = watched, entry.rig
+					break
+				end
+			end
+		end
+
+		if not (model and rig) then
+			ctx.reply("[fx] not in or near a vehicle")
+			return
+		end
+
+		ctx.reply(table.concat(VehicleFX.Report(model, rig), "\n"))
+	end,
+})
+
 return Vehicle

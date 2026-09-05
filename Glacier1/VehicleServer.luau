@@ -894,7 +894,7 @@ Config.Command("vehicle_rig", {
 				:format(rig.wheelbase, #rig.seats, rest),
 			("  suspension %.2f  travel below rest %.2f")
 				:format(def.suspension, def.suspension * (1 - VehicleDefs.RestCompression)),
-			"  wheel        rest Y   reach down  roll radius  bottom at rest",
+			"  wheel        rest Y   reach down  roll radius  bottom at rest  parts",
 		}
 
 		for _, wheel in ipairs(rig.wheels) do
@@ -902,9 +902,22 @@ Config.Command("vehicle_rig", {
 			-- Where this wheel's underside ends up once the car is parked.
 			-- Zero means resting exactly on the road; positive is the float.
 			local bottom = rest + wheel.rest.Y - ground
-			table.insert(lines, ("  %-10s %8.3f %11.3f %12.3f %14.3f%s"):format(
-				wheel.name, wheel.rest.Y, ground, wheel.radius, bottom,
+
+			-- The part COUNT, because the failure it exposes is invisible from
+			-- the numbers: a rim the rig never listed is a rim nothing anchors
+			-- and nothing draws, and it falls out of the wheel. A wheel with a
+			-- rim modelled inside it should read 2 here, not 1.
+			local parts = #VehicleDefs.WheelParts(wheel)
+
+			table.insert(lines, ("  %-10s %8.3f %11.3f %12.3f %14.3f %6d%s"):format(
+				wheel.name, wheel.rest.Y, ground, wheel.radius, bottom, parts,
 				(math.abs(bottom) > 0.01) and "  <-- not touching" or ""))
+		end
+
+		if #rig.wheels > 0 and not rig.wheels[1].part then
+			table.insert(lines,
+				"  (no wheel parts found -- this is the nominal layout, so the "
+				.. "model's own wheels are neither anchored nor drawn)")
 		end
 
 		reply(ctx, table.concat(lines, "\n"))

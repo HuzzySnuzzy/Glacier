@@ -563,17 +563,24 @@ local function gatherSeats(model, chassis, def)
 	return fallback
 end
 
--- The parts of a wheel that are NOT the one the sim measures: a brake disc, a
--- hub cap, a spare tyre mesh sitting inside the tyre. Recorded with their
--- offset from the measured part so they can be drawn rigid to it.
+-- The parts of a wheel that are NOT the one the sim measures: a rim, a brake
+-- disc, a hub cap. Recorded with their offset from the measured part so they
+-- can be drawn rigid to it.
 --
 -- They have to be recorded at all because of what happens to a part this
 -- system does not know about. Nothing draws it, so it does not follow the
 -- car; and the server anchors what the rig lists, so an unlisted part is left
 -- unanchored and Roblox drops it on the floor. That is the bug this exists to
 -- stop -- wheels visibly falling off a moving car.
+--
+-- The WHOLE SUBTREE, including when the holder IS the measured part. The
+-- natural way to build a wheel here is a plain transparent cylinder with the
+-- detailed rim parented inside it, so that the rim turns and rolls with the
+-- collision shape -- which is to say the commonest layout of all is the one
+-- where holder and part are the same object. Skipping that case dropped every
+-- rim on the road.
 local function gatherExtras(holder, part)
-	if holder == part or not holder then return nil end
+	if not holder then return nil end
 
 	local extras
 	for _, other in ipairs(holder:GetDescendants()) do

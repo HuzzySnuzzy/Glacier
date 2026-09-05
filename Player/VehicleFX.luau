@@ -20,6 +20,10 @@
 --   Exhaust/Smoke           ParticleEmitter   idle haze, thicker under power
 --   Wheels/<wheel>/Smoke    ParticleEmitter   per wheel, on slip or lock-up
 --
+-- Names are matched anywhere in the subtree, not just on the top level: a
+-- wheel here is a transparent cylinder with a detailed rim inside it, and an
+-- emitter usually ends up on the rim or on an Attachment under it.
+--
 -- The backfire has a particle and a sound and they are found in different
 -- places -- the emitter under Exhaust, where you would model it, and the
 -- sound under Chassis, where the engine already is. Both are optional and
@@ -35,15 +39,49 @@ local VehicleFX = {}
 -- LOOKUP
 --=====================================================================
 
+-- Direct children first, then the whole subtree.
+--
+-- Depth matters because of how these models are actually built. A wheel here
+-- is a transparent cylinder with the detailed rim parented inside it, and an
+-- emitter dropped onto the rim -- or onto an Attachment, which is how Studio
+-- parents one if you use the Effects tab -- is two levels down, not one.
+-- Searching only the top level found nothing and the tyres smoked never.
+--
+-- Shallowest match wins, so a Smoke on the wheel itself still beats one on
+-- some decoration inside it.
 local function findByName(parent, needle, className)
 	if not parent then return nil end
 	local lower = string.lower(needle)
+
 	for _, child in ipairs(parent:GetChildren()) do
 		if child:IsA(className) and string.find(string.lower(child.Name), lower, 1, true) then
 			return child
 		end
 	end
+
+	for _, child in ipairs(parent:GetChildren()) do
+		local found = findByName(child, needle, className)
+		if found then return found end
+	end
 	return nil
+end
+
+-- The value the artist set, remembered on the instance itself.
+--
+-- Everything here scales DOWN from what is in the model, which means the
+-- original has to survive being scaled. It is read once and stamped on the
+-- emitter as an attribute, because the rig this cache hangs off is held
+-- weakly: let it be collected between one drive and the next and the next
+-- lookup would read the zero this code left behind and take it for the
+-- artist's intent. The tyres would then smoke once per session and never
+-- again -- which is the kind of bug that looks like bad luck.
+local function rememberedRate(emitter)
+	local saved = emitter:GetAttribute("FXBaseRate")
+	if saved == nil then
+		saved = emitter.Rate
+		emitter:SetAttribute("FXBaseRate", saved)
+	end
+	return saved
 end
 
 -- Measured once per model and hung off the rig, because walking the tree for
@@ -86,20 +124,25 @@ local function fxOf(model, rig)
 	-- The rates the artist set are the loud end; everything below scales
 	-- toward zero from them, so tuning the look stays in Studio.
 	fx.baseRates = {}
-	if fx.exhaust then fx.baseRates.exhaust = fx.exhaust.Rate end
+	if fx.exhaust then fx.baseRates.exhaust = rememberedRate(fx.exhaust) end
 
 	-- The screech is a LOOP whose volume is the effect, so the artist's volume
 	-- is the loud end the same way their Rate is. Captured before anything
 	-- here touches it, or the first quiet frame would become the new maximum
 	-- and the sound would fade away over the session.
 	if fx.screech then
-		fx.screechVolume = fx.screech.Volume
+		local saved = fx.screech:GetAttribute("FXBaseVolume")
+		if saved == nil then
+			saved = fx.screech.Volume
+			fx.screech:SetAttribute("FXBaseVolume", saved)
+		end
+		fx.screechVolume = saved
 		fx.screechPitch = fx.screech.PlaybackSpeed
 		fx.screech.Volume = 0
 	end
-	if fx.backfire then fx.baseRates.backfire = fx.backfire.Rate end
+	if fx.backfire then fx.baseRates.backfire = rememberedRate(fx.backfire) end
 	for i, emitter in pairs(fx.wheelSmoke) do
-		fx.baseRates[i] = emitter.Rate
+		fx.baseRates[i] = rememberedRate(emitter)
 	end
 
 	-- Emitters are switched off to begin with. An artist leaves them enabled
@@ -124,9 +167,22 @@ end
 local MIN_PITCH = 0.55
 local MAX_PITCH = 2.2
 
--- Below this much slip the tyres are gripping as far as anyone listening is
--- concerned, and the screech stays silent. See the note where it is used.
-local SCREECH_FLOOR = 0.18
+-- Below this much slip the tyres are gripping as far as anyone can hear or
+-- see, and both the noise and the smoke stay off.
+--
+-- A DEAD BAND, because slip is never exactly zero: a car tracking straight
+-- down a road carries a percent or two of it, and mapping that straight onto
+-- an effect means the tyres howl and smoulder quietly all the time, which
+-- costs the effect the only thing it was for.
+local SLIP_FLOOR = 0.18
+
+-- How hard a tyre is sliding, as 0 to 1 above the dead band. ONE curve, used
+-- by both the noise and the smoke, so a tyre that screeches also smokes.
+-- Having them on separate mappings is what let a car be audibly sideways with
+-- nothing coming off the tyres.
+local function slipVoice(slip)
+	return math.clamp((slip - SLIP_FLOOR) / (1 - SLIP_FLOOR), 0, 1)
+end
 
 local function enginePitch(def, rpm)
 	local span = math.max(def.redlineRpm - def.idleRpm, 1)
@@ -213,8 +269,14 @@ function VehicleFX.Update(model, rig, state, deltaTime)
 		local slip = (wheel and wheel.front) and front or rear
 
 		-- A wheel in the air does not smoke, however hard the car is sliding.
-		local amount = grounded and slip or 0
-		emitter.Rate = (base[i] or 20) * math.clamp(amount, 0, 1)
+		local voice = grounded and slipVoice(slip) or 0
+
+		-- SQUARE ROOT, because a tyre either smokes or it does not. Scaling
+		-- the artist's rate linearly means a car visibly sideways at a third
+		-- of full slip gets a third of the particles, which at any sane
+		-- authored rate is a handful a second and reads as nothing at all --
+		-- you hear the tyres let go and see no smoke.
+		emitter.Rate = (base[i] or 20) * math.sqrt(voice)
 	end
 
 	--------------------------------------------------------------
@@ -230,7 +292,7 @@ function VehicleFX.Update(model, rig, state, deltaTime)
 		-- straight down a road carries a percent or two of it, and mapping
 		-- that straight to volume means the tyres howl quietly all the time
 		-- and the effect stops meaning anything.
-		local voice = math.clamp((slip - SCREECH_FLOOR) / (1 - SCREECH_FLOOR), 0, 1)
+		local voice = slipVoice(slip)
 
 		fx.screech.Volume = (fx.screechVolume or 0.5) * voice
 		-- Rising slightly as it gets worse, so a slow slide and a full lock-up
@@ -246,6 +308,45 @@ function VehicleFX.Update(model, rig, state, deltaTime)
 			fx.screech:Stop()
 		end
 	end
+end
+
+-- What this layer actually resolved on a given car, as lines of text.
+--
+-- Every piece of art here is optional and matched by name, which is the right
+-- trade for a system art has to be dropped into -- but it means the failure
+-- mode is silence. An emitter named something unexpected, or parented
+-- somewhere the search does not reach, produces a car that drives correctly
+-- and does nothing else, with no error anywhere to say why. This turns that
+-- into a question you can answer from the console.
+function VehicleFX.Report(model, rig)
+	if not (model and rig and rig.chassis) then return { "[fx] no rig" } end
+
+	local fx = fxOf(model, rig)
+	local function state(instance, rate)
+		if not instance then return "MISSING" end
+		if rate then
+			return ("%s (rate %.1f)"):format(instance.Name, rate)
+		end
+		return instance.Name
+	end
+
+	local lines = {
+		("[fx] %s"):format(model.Name),
+		("  engine        %s"):format(state(fx.engine)),
+		("  backfire snd  %s"):format(state(fx.backfireSound)),
+		("  screech snd   %s%s"):format(state(fx.screech),
+			fx.screech and (" (volume %.2f)"):format(fx.screechVolume or 0) or ""),
+		("  exhaust       %s"):format(state(fx.exhaust, fx.baseRates.exhaust)),
+		("  backfire fx   %s"):format(state(fx.backfire, fx.baseRates.backfire)),
+	}
+
+	for i, wheel in ipairs(rig.wheels) do
+		table.insert(lines, ("  wheel %-8s %s"):format(
+			wheel.name or ("#" .. i),
+			state(fx.wheelSmoke[i], fx.baseRates[i])))
+	end
+
+	return lines
 end
 
 -- Called when a car stops being driven or watched, so it does not sit there
