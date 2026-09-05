@@ -92,6 +92,15 @@ local function seatAttribute(index)
 	return ("Seat%d"):format(index)
 end
 
+-- Seat NAMES come from the rig -- the model -- not from the def, because how
+-- many seats a car has and what they are called is a property of the art now.
+-- A car with a Driverseat and five Seats has six.
+local function seatName(model, index)
+	local entry = vehicles[model]
+	local seat = entry and entry.rig and entry.rig.seats[index]
+	return seat and seat.name or ("seat " .. index)
+end
+
 local function seatOccupant(model, index)
 	local id = model:GetAttribute(seatAttribute(index))
 	if type(id) ~= "number" or id == 0 then return nil end
@@ -107,7 +116,7 @@ end
 -- exit, death and disconnect -- never per frame.
 local function seatOf(plr)
 	for model, entry in pairs(vehicles) do
-		for i = 1, #entry.def.seats do
+		for i = 1, #entry.rig.seats do
 			if model:GetAttribute(seatAttribute(i)) == plr.UserId then
 				return model, i
 			end
@@ -140,8 +149,24 @@ end
 -- VehicleDefs.Build documents (a PrimaryPart named Chassis, a Wheels folder).
 local function sourceModel(class)
 	local library = ReplicatedStorage:FindFirstChild("Vehicles")
-	local template = library and library:FindFirstChild(class)
-	if template and template:IsA("Model") and template.PrimaryPart then
+	if not library then return nil end
+
+	-- Case-insensitive, because a model called "Car" and a command typed as
+	-- `vehicle_spawn car` should find each other. Exact match wins so an
+	-- author can still have both "Van" and "van" if they insist.
+	local template = library:FindFirstChild(class)
+	if not template then
+		local wanted = string.lower(tostring(class))
+		for _, child in ipairs(library:GetChildren()) do
+			if string.lower(child.Name) == wanted then template = child break end
+		end
+	end
+
+	-- PrimaryPart is NOT required here. A model with a part named Chassis is
+	-- the common near-miss, and VehicleDefs.Rig sets PrimaryPart for them --
+	-- refusing to spawn over it would be a worse answer than fixing it.
+	if template and template:IsA("Model")
+		and (template.PrimaryPart or template:FindFirstChild("Chassis")) then
 		return template:Clone()
 	end
 	return nil
@@ -150,10 +175,18 @@ end
 local function spawnVehicle(class, cframe)
 	if not Config.Get("sv_vehicles") then return nil, "vehicles are disabled (sv_vehicles 0)" end
 
+	-- A name with art behind it is a valid vehicle even if VehicleDefs has
+	-- never heard of it: it gets the default handling. That is what makes
+	-- "drop a model in ReplicatedStorage.Vehicles" the whole of adding a car.
+	local model = sourceModel(class)
 	local def = VehicleDefs.Get(class)
 	if not def then
-		return nil, ("unknown class '%s'; try: %s")
-			:format(tostring(class), table.concat(VehicleDefs.List(), ", "))
+		if not model then
+			return nil, ("unknown class '%s'; try: %s, or put a model of that "
+				.. "name in ReplicatedStorage.Vehicles")
+				:format(tostring(class), table.concat(VehicleDefs.List(), ", "))
+		end
+		def = VehicleDefs.GetOrDerive(class)
 	end
 
 	local limit = Config.Get("sv_vehicle_maxcount") or 24
@@ -161,7 +194,6 @@ local function spawnVehicle(class, cframe)
 		return nil, ("vehicle limit reached (%d); vehicle_clear or raise sv_vehicle_maxcount"):format(limit)
 	end
 
-	local model = sourceModel(def.class)
 	if not model then
 		local built, why = VehicleDefs.Build(def.class)
 		if not built then return nil, why end
@@ -172,16 +204,46 @@ local function spawnVehicle(class, cframe)
 	model.Name = ("%s_%d"):format(def.label, nextId)
 	model:SetAttribute("Class", def.class)
 	model:SetAttribute("VehicleId", nextId)
-	for i = 1, #def.seats do
+
+	-- Parented BEFORE the rig is measured: Rig refuses a model with no parent,
+	-- and it also has side effects worth having land on the live instance --
+	-- it sets PrimaryPart, and it disables the Roblox Seat behaviour.
+	model.Parent = folder()
+
+	local rig = VehicleDefs.Rig(model, def)
+	if not rig then
+		model:Destroy()
+		return nil, ("'%s' has no PrimaryPart and no part named Chassis"):format(def.class)
+	end
+
+	for i = 1, #rig.seats do
 		model:SetAttribute(seatAttribute(i), 0)
+	end
+	-- Replicated so a client can tell a full car from an empty one without
+	-- measuring the model itself.
+	model:SetAttribute("SeatCount", #rig.seats)
+
+	-- Anchored and CanCollide, whatever the source model said. The sim moves
+	-- this by CFrame; an unanchored chassis would be simulated twice, once
+	-- here and once by Roblox, and they would fight.
+	rig.chassis.Anchored = true
+	rig.chassis.CanCollide = true
+
+	-- Wheels are drawn, never collided. A wheel that collides catches on the
+	-- geometry its own suspension ray is measuring.
+	for _, wheel in ipairs(rig.wheels) do
+		if wheel.part then
+			wheel.part.Anchored = true
+			wheel.part.CanCollide = false
+		end
 	end
 
 	-- Lifted so a spawn at ground level starts ON the springs rather than
-	-- buried in the road with them fully compressed.
-	model:PivotTo(cframe + Vector3.new(0, VehicleDefs.RestHeight(def), 0))
-	model.Parent = folder()
+	-- buried in the road with them fully compressed. Measured off the rig, so
+	-- a model with big wheels parks on them rather than on a table's numbers.
+	model:PivotTo(cframe + Vector3.new(0, VehicleDefs.RigRestHeight(rig), 0))
 
-	vehicles[model] = { def = def, lastSync = 0 }
+	vehicles[model] = { def = def, rig = rig, lastSync = 0 }
 	return model
 end
 
@@ -192,7 +254,7 @@ local function removeVehicle(model)
 	-- Everyone out FIRST. Destroying the model under an occupant leaves their
 	-- client driving a nil chassis, and the only thing that tells them
 	-- otherwise is this announcement.
-	for i = 1, #entry.def.seats do
+	for i = 1, #entry.rig.seats do
 		local occupant = seatOccupant(model, i)
 		if occupant then announce(model, occupant, i, false) end
 	end
@@ -249,10 +311,10 @@ local function tryEnter(plr, model, seatIndex)
 	-- obvious thing when you walk up to an empty car.
 	local wanted = tonumber(seatIndex)
 	local chosen
-	if wanted and entry.def.seats[wanted] and not seatOccupant(model, wanted) then
+	if wanted and entry.rig.seats[wanted] and not seatOccupant(model, wanted) then
 		chosen = wanted
 	else
-		for i = 1, #entry.def.seats do
+		for i = 1, #entry.rig.seats do
 			if not seatOccupant(model, i) then chosen = i; break end
 		end
 	end
@@ -515,10 +577,10 @@ Config.Command("vehicle_list", {
 		local lines = {}
 		for model, entry in pairs(vehicles) do
 			local occupants = {}
-			for i = 1, #entry.def.seats do
+			for i = 1, #entry.rig.seats do
 				local occupant = seatOccupant(model, i)
 				if occupant then
-					table.insert(occupants, ("%s:%s"):format(entry.def.seats[i].name, occupant.Name))
+					table.insert(occupants, ("%s:%s"):format(seatName(model, i), occupant.Name))
 				end
 			end
 			local chassis = chassisOf(model)

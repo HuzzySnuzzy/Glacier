@@ -141,30 +141,33 @@ end
 
 local function probeSuspension(s)
 	local def = s.def
-	local anchors = VehicleDefs.WheelAnchors(def)
-	local reach = def.suspension + def.wheelRadius * 2
+	local wheels = s.rig.wheels
 
 	local contacts = {}
 	local normalSum = Vector3.zero
 	local grounded = 0
 	local deepest = 0
 
-	for i, anchor in ipairs(anchors) do
-		local origin = s.cf * anchor.offset
+	for i, wheel in ipairs(wheels) do
+		-- Per-wheel radius, measured off the part. A model with 1.4-stud
+		-- wheels must not be simulated as though it had 1.1-stud ones, and
+		-- a model with a big pair on the back is a thing people build.
+		local reach = def.suspension + wheel.radius * 2
+		local origin = s.cf * wheel.offset
 		local hit = workspace:Raycast(origin, -s.cf.UpVector * reach, s.params)
 
 		if hit then
 			-- 0 at full droop, 1 at fully compressed. Past 1 means the wheel
 			-- is jammed into geometry, which the spring answers very hard.
 			local compression = 1 - math.clamp(
-				(hit.Distance - def.wheelRadius) / math.max(def.suspension, 0.05), 0, 1)
+				(hit.Distance - wheel.radius) / math.max(def.suspension, 0.05), 0, 1)
 
 			contacts[i] = {
 				position = hit.Position,
 				normal = hit.Normal,
 				compression = compression,
-				front = anchor.front,
-				anchor = anchor.offset,
+				front = wheel.front,
+				anchor = wheel.offset,
 				distance = hit.Distance,
 			}
 			normalSum += hit.Normal
@@ -178,7 +181,7 @@ local function probeSuspension(s)
 	local normal = (grounded > 0 and normalSum.Magnitude > 1e-3)
 		and normalSum.Unit or Vector3.yAxis
 
-	return contacts, normal, grounded / #anchors, deepest
+	return contacts, normal, grounded / math.max(#wheels, 1), deepest
 end
 
 --=====================================================================
@@ -206,7 +209,7 @@ local function moveChassis(s, displacement, dt)
 		-- box exactly the size of the collision box starts the sweep already
 		-- touching whatever it is resting against.
 		local hit = workspace:Blockcast(
-			CFrame.new(pos) * s.cf.Rotation, s.def.size - SKIN_SIZE, remaining, s.params)
+			CFrame.new(pos) * s.cf.Rotation, s.rig.size - SKIN_SIZE, remaining, s.params)
 
 		if not hit then
 			pos += remaining
@@ -447,8 +450,14 @@ local function step(s, dt)
 	-- wheel wound over does not rotate, and letting it would mean tank-turning
 	-- on the spot, which reads as a bug even to people who like it.
 	if grounded and math.abs(roadSpeed) > 0.5 then
-		local wheelbase = VehicleDefs.Wheelbase(def)
-		local yawRate = (roadSpeed / wheelbase) * math.tan(math.rad(s.steer))
+		-- NEGATED, and this is the counterpart to the heading sign below.
+		-- Roblox yaw INCREASES counter-clockwise seen from above, so a
+		-- positive yaw rate turns the car LEFT -- while a positive steer
+		-- angle is the D key, which has to turn it RIGHT. Without the
+		-- negation the car steers into the key you did not press, which is
+		-- perfectly stable, perfectly smooth, and completely wrong.
+		local wheelbase = s.rig.wheelbase
+		local yawRate = -(roadSpeed / wheelbase) * math.tan(math.rad(s.steer))
 
 		-- Oversteer: a sliding rear end keeps rotating past where the front
 		-- wheels are pointing. balance below 0.5 leans this way on purpose.
@@ -511,7 +520,10 @@ local function step(s, dt)
 	--------------------------------------------------------------
 	-- 12. WHEEL SPIN  (visual)
 	--------------------------------------------------------------
-	s.wheelSpin = (s.wheelSpin or 0) + (roadSpeed / math.max(def.wheelRadius, 0.1)) * dt
+	-- Spin rate from the FRONT wheel's real radius: a bigger wheel turns
+	-- slower for the same road speed, which is visible at a glance.
+	local spinRadius = s.rig.wheels[1] and s.rig.wheels[1].radius or def.wheelRadius
+	s.wheelSpin = (s.wheelSpin or 0) + (roadSpeed / math.max(spinRadius, 0.1)) * dt
 	s.contacts = contacts
 	s.deepest = deepest
 	s.lastHit = hit
@@ -521,34 +533,40 @@ end
 -- DRAWING
 --=====================================================================
 
-local function drawWheels(model, def, cf, steer, spin, contacts)
-	local wheels = model:FindFirstChild("Wheels")
-	if not wheels then return end
+local function drawWheels(rig, cf, steer, spin, contacts)
+	if not rig then return end
+	local def = rig.def
 
-	local anchors = VehicleDefs.WheelAnchors(def)
-	for i, anchor in ipairs(anchors) do
-		local wheel = wheels:FindFirstChild(anchor.name)
-		if wheel then
-			-- Ride height per wheel: a wheel over a bump sits higher in the
-			-- arch than one over a hole. This is the visible half of the
-			-- suspension, and without it the springs may as well not exist.
+	for i, wheel in ipairs(rig.wheels) do
+		local part = wheel.part
+		if part and part.Parent then
 			-- Rest position by default, not full droop: an observed car has
 			-- no contacts to read, and hanging its wheels at the bottom of
 			-- the travel makes every other player's car look jacked up.
 			local drop = def.suspension * (1 - VehicleDefs.RestCompression)
 			local contact = contacts and contacts[i]
 			if contact then
-				drop = math.clamp(contact.distance - def.wheelRadius, 0, def.suspension)
+				drop = math.clamp(contact.distance - wheel.radius, 0, def.suspension)
 			end
 
-			local steerRot = anchor.front and CFrame.Angles(0, math.rad(steer), 0) or CFrame.identity
+			-- Steer about the CHASSIS up axis, before the wheel's own rotation.
+			-- Front axle only, which is what rig.front is for.
+			local steerRot = wheel.front and CFrame.Angles(0, math.rad(steer), 0) or CFrame.identity
 
-			-- Cylinders point down their X axis in Roblox, so the extra
-			-- quarter turn about Z is what stands the wheel up.
-			wheel.CFrame = cf
-				* CFrame.new(anchor.offset - Vector3.new(0, drop, 0))
+			-- restRot is the orientation the wheel was AUTHORED with, kept
+			-- rather than replaced. The first version forced a quarter turn about
+			-- Z, which is right for a cylinder built the way Build builds them and
+			-- wrong for every wheel anybody models themselves -- it would twist
+			-- their art on the first frame.
+			--
+			-- Spin goes last, about the wheel's own X, because that is the axle of
+			-- a Roblox cylinder. A wheel modelled around a different axis will roll
+			-- about the wrong one; that is the one thing here that art has to match
+			-- rather than declare.
+			part.CFrame = cf
+				* CFrame.new(wheel.offset - Vector3.new(0, drop, 0))
 				* steerRot
-				* CFrame.Angles(0, 0, math.rad(90))
+				* wheel.restRot
 				* CFrame.Angles(spin, 0, 0)
 		end
 	end
@@ -558,22 +576,23 @@ end
 -- OCCUPANCY
 --=====================================================================
 
-local function seatCFrame(model, def, index)
-	local chassis = model.PrimaryPart
-	if not chassis then return nil end
-	local seat = def.seats[index]
+local function seatCFrame(rig, index)
+	if not rig or not rig.chassis then return nil end
+	local seat = rig.seats[index]
 	if not seat then return nil end
-	return chassis.CFrame * CFrame.new(seat.offset)
+	-- The seat's full local CFrame, not just its position: a seat rotated to
+	-- face out of a door should put the occupant facing that way too.
+	return rig.chassis.CFrame * seat.cf
 end
 
 -- Parks the RawBody at the seat. Everything else in the engine -- health,
 -- weapons, PuppetSync, hit detection -- keys off the body, so the one thing a
 -- passenger MUST keep doing is being where the car is.
-local function parkBody(model, def, index)
+local function parkBody(rig, index)
 	local body = State.playerBody
 	if not body then return end
 
-	local cf = seatCFrame(model, def, index)
+	local cf = seatCFrame(rig, index)
 	if not cf then return end
 
 	body.CFrame = cf
@@ -613,15 +632,22 @@ local function setViewmodelHidden(hidden)
 end
 
 local function startDriving(model, def, index)
-	local chassis = model.PrimaryPart
-	if not chassis then return end
+	-- Measured once, here, and carried for the life of the drive. Rebuilding
+	-- it per step would mean a GetDescendants walk at sv_PhysicsHz.
+	local rig = VehicleDefs.Rig(model, def)
+	if not rig then
+		warn("[Vehicle] " .. model.Name .. " has no PrimaryPart and no part named Chassis.")
+		return
+	end
 
+	local chassis = rig.chassis
 	local _, yaw = chassis.CFrame:ToEulerAnglesYXZ()
 
 	sim = {
 		model = model,
 		chassis = chassis,
 		def = def,
+		rig = rig,
 		cf = chassis.CFrame,
 		prevCf = chassis.CFrame,
 		vel = Vector3.zero,
@@ -664,8 +690,7 @@ local function onStateChange(packet)
 
 	if packet.entered then
 		if not model then return end
-		local def = VehicleDefs.Get(packet.class or model:GetAttribute("Class"))
-		if not def then return end
+		local def = VehicleDefs.GetOrDerive(packet.class or model:GetAttribute("Class"))
 
 		seatModel = model
 		seatIndex = packet.seat
@@ -724,13 +749,15 @@ local function nearestFreeVehicle()
 			if distance <= range and (not bestDist or distance < bestDist) then
 				-- A full car is not a candidate: offering it means +use does
 				-- nothing and eats the press that would have picked up a gun.
-				local def = VehicleDefs.Get(model:GetAttribute("Class"))
+				-- SeatCount is published by the server when it registers the
+				-- vehicle, because how many seats a car has is now a property
+				-- of the MODEL and this scan must not build a rig for every
+				-- candidate every frame.
+				local seatCount = model:GetAttribute("SeatCount") or 0
 				local free = false
-				if def then
-					for i = 1, #def.seats do
-						local occupant = model:GetAttribute(("Seat%d"):format(i))
-						if not occupant or occupant == 0 then free = true; break end
-					end
+				for i = 1, seatCount do
+					local occupant = model:GetAttribute(("Seat%d"):format(i))
+					if not occupant or occupant == 0 then free = true; break end
 				end
 				if free then best, bestDist = model, distance end
 			end
@@ -845,7 +872,8 @@ local function pushObserved(packet)
 
 	local entry = observed[model]
 	if not entry then
-		entry = { snapshots = {}, def = VehicleDefs.Get(model:GetAttribute("Class")) }
+		local def = VehicleDefs.GetOrDerive(model:GetAttribute("Class"))
+		entry = { snapshots = {}, def = def, rig = VehicleDefs.Rig(model, def) }
 		observed[model] = entry
 	end
 	if not entry.def then return end
@@ -904,7 +932,10 @@ local function drawObserved()
 				end
 
 				model:PivotTo(cf)
-				drawWheels(model, entry.def, cf, steer, spin, nil)
+				-- Re-measured if the rig went stale, which happens when the
+				-- model was still streaming in when the first packet landed.
+				entry.rig = entry.rig or VehicleDefs.Rig(model, entry.def)
+				drawWheels(entry.rig, cf, steer, spin, nil)
 			end
 		end
 	end
@@ -936,8 +967,9 @@ function Vehicle.Update(deltaTime)
 		return false
 	end
 
-	local def = VehicleDefs.Get(seatModel:GetAttribute("Class"))
-	if not def then return false end
+	local def = VehicleDefs.GetOrDerive(seatModel:GetAttribute("Class"))
+	local rig = (sim and sim.rig) or VehicleDefs.Rig(seatModel, def)
+	if not rig then return false end
 
 	if sim then
 		local hz = num(Config.sv_PhysicsHz, 60)
@@ -960,7 +992,7 @@ function Vehicle.Update(deltaTime)
 		local renderCf = sim.prevCf:Lerp(sim.cf, alpha)
 
 		seatModel:PivotTo(renderCf)
-		drawWheels(seatModel, def, renderCf, sim.steer, sim.wheelSpin, sim.contacts)
+		drawWheels(rig, renderCf, sim.steer, sim.wheelSpin, sim.contacts)
 
 		State.vehicleSpeed = math.abs(sim.roadSpeed or 0)
 		State.vehicleSlip = sim.slip or 0
@@ -969,7 +1001,7 @@ function Vehicle.Update(deltaTime)
 		State.vehicleSpeed = 0
 	end
 
-	parkBody(seatModel, def, seatIndex or 1)
+	parkBody(rig, seatIndex or 1)
 	updateCamera(seatModel, def, deltaTime)
 
 	return true

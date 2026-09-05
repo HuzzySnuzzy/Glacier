@@ -180,6 +180,20 @@ function VehicleDefs.Get(class)
 	return def
 end
 
+-- A def for ANY name. A known class gets its own numbers; anything else --
+-- a model dropped into ReplicatedStorage.Vehicles under a new name -- gets the
+-- defaults, so adding a vehicle needs no code at all. Handling can be promoted
+-- into Classes later, or never.
+function VehicleDefs.GetOrDerive(class)
+	local known = VehicleDefs.Get(class)
+	if known then return known end
+
+	local derived = VehicleDefs.Get("sedan")
+	derived.class = string.lower(tostring(class or "sedan"))
+	derived.label = tostring(class or "Vehicle")
+	return derived
+end
+
 function VehicleDefs.List()
 	local names = {}
 	for key in pairs(VehicleDefs.Classes) do table.insert(names, key) end
@@ -210,6 +224,256 @@ end
 -- Distance front axle to rear axle. The bicycle model's only geometry input.
 function VehicleDefs.Wheelbase(def)
 	return math.max(def.size.Z - def.wheelRadius * 2.2, 1)
+end
+
+--=====================================================================
+-- RIG
+--=====================================================================
+-- The def holds HANDLING -- how much grip, how much power, how fast the lock
+-- falls off. The rig holds GEOMETRY, and geometry comes from the model, not
+-- from a table: where the wheels actually are, how big they actually are,
+-- where the seats actually are, how big the collision box actually is.
+--
+-- That split is the whole point. It means art can be authored in Studio, by
+-- eye, and dropped in -- move a wheel and the suspension ray moves with it,
+-- add a seat and there is another seat. Nothing here needs editing to add a
+-- vehicle, and a model whose wheels are 1.4 studs across is not silently
+-- simulated as though they were 1.1.
+--
+-- WHAT A MODEL NEEDS:
+--   PrimaryPart, or a part named Chassis (this sets it for you). Anchored,
+--     CanCollide -- it is the only part the sim collides with.
+--   Wheels/       a folder or model of parts. Anchored, CanCollide FALSE.
+--                 Named FL FR RL RR to declare which axle they are on;
+--                 otherwise the front is decided by local Z.
+--   Seats         any number of Seat or VehicleSeat parts. The one whose
+--                 name contains "driver" is seat 1. Failing that, Attachments
+--                 named Seat1..SeatN on the chassis, which is what Build
+--                 makes. Failing that, the def's own offsets.
+--
+-- Everything else in the model is decoration and is simply carried along.
+
+local rigCache = setmetatable({}, { __mode = "k" })
+
+local function localOffset(chassis, part)
+	return chassis.CFrame:ToObjectSpace(part.CFrame)
+end
+
+-- A wheel's radius from its size. Roblox cylinders lie along their own X, so
+-- the radius is on the other two axes; taking the larger of them also gives a
+-- sane answer for a ball, a block or an imported mesh.
+local function wheelRadiusOf(part)
+	return math.max(part.Size.Y, part.Size.Z) * 0.5
+end
+
+local function wheelsFolder(model)
+	local found = model:FindFirstChild("Wheels")
+	if found then return found end
+	return model
+end
+
+-- Roblox Seats are not passive. A Seat with a Humanoid touching it welds that
+-- Humanoid into itself, and this engine's puppets HAVE Humanoids -- so a
+-- player who walks into a parked car would be grabbed by its back seat, by
+-- Roblox, behind this system's back. Disabled stops that; CanTouch off stops
+-- the touch events it would still fire.
+--
+-- Done here rather than at spawn so it applies to every path that produces a
+-- vehicle, including a model somebody drops into the world by hand.
+local function neutraliseSeat(part)
+	pcall(function() part.Disabled = true end)
+	part.CanTouch = false
+	part.CanCollide = false
+end
+
+local function gatherSeats(model, chassis, def)
+	local seats = {}
+
+	-- 1. Real Seat parts, which is how you would author this in Studio.
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("BasePart")
+			and (descendant:IsA("Seat") or descendant:IsA("VehicleSeat")) then
+			neutraliseSeat(descendant)
+			table.insert(seats, {
+				part = descendant,
+				name = descendant.Name,
+				cf = localOffset(chassis, descendant),
+				driver = string.find(string.lower(descendant.Name), "driver") ~= nil,
+			})
+		end
+	end
+
+	if #seats > 0 then
+		-- Driver first, always -- everything downstream keys seat 1 to the
+		-- driver. The rest are ordered front to back and then left to right,
+		-- so seat numbers stay stable between runs however GetDescendants
+		-- happens to have ordered them.
+		table.sort(seats, function(a, b)
+			if a.driver ~= b.driver then return a.driver end
+			local ap, bp = a.cf.Position, b.cf.Position
+			if math.abs(ap.Z - bp.Z) > 0.05 then return ap.Z < bp.Z end
+			return ap.X < bp.X
+		end)
+
+		local out = {}
+		for i, seat in ipairs(seats) do
+			out[i] = { offset = seat.cf.Position, cf = seat.cf, name = seat.name, part = seat.part }
+		end
+		return out
+	end
+
+	-- 2. Seat attachments on the chassis, which is what Build makes.
+	local fromAttachments = {}
+	for i = 1, 32 do
+		local a = chassis:FindFirstChild(("Seat%d"):format(i))
+		if not a or not a:IsA("Attachment") then break end
+		fromAttachments[i] = {
+			offset = a.Position,
+			cf = CFrame.new(a.Position),
+			name = a:GetAttribute("Label") or a.Name,
+		}
+	end
+	if #fromAttachments > 0 then return fromAttachments end
+
+	-- 3. The def's nominal offsets.
+	local fallback = {}
+	for i, seat in ipairs(def.seats) do
+		fallback[i] = { offset = seat.offset, cf = CFrame.new(seat.offset), name = seat.name }
+	end
+	return fallback
+end
+
+local function gatherWheels(model, chassis, def)
+	local wheels = {}
+	local container = wheelsFolder(model)
+
+	for _, part in ipairs(container:GetDescendants()) do
+		if part:IsA("BasePart") and part ~= chassis then
+			local cf = localOffset(chassis, part)
+			table.insert(wheels, {
+				part = part,
+				name = part.Name,
+				offset = cf.Position,
+				restRot = cf.Rotation,
+				radius = wheelRadiusOf(part),
+			})
+		end
+	end
+
+	if #wheels == 0 then
+		-- No art. Fall back to the nominal layout so a def without a model
+		-- still has something to cast from.
+		for _, anchor in ipairs(VehicleDefs.WheelAnchors(def)) do
+			table.insert(wheels, {
+				name = anchor.name,
+				offset = anchor.offset,
+				-- Standing a Roblox cylinder up: they lie along their own X.
+				restRot = CFrame.Angles(0, 0, math.rad(90)),
+				radius = def.wheelRadius,
+				front = anchor.front,
+			})
+		end
+		return wheels
+	end
+
+	-- Which axle each wheel is on. The name is authoritative when it says so,
+	-- because a model can be built with its wheels anywhere; local Z decides
+	-- the rest, and -Z is forward in Roblox.
+	local sumZ = 0
+	for _, wheel in ipairs(wheels) do sumZ += wheel.offset.Z end
+	local midZ = sumZ / #wheels
+
+	for _, wheel in ipairs(wheels) do
+		local lower = string.lower(wheel.name)
+		if string.sub(lower, 1, 1) == "f" then
+			wheel.front = true
+		elseif string.sub(lower, 1, 1) == "r" and lower ~= "right" then
+			wheel.front = false
+		else
+			wheel.front = wheel.offset.Z < midZ
+		end
+	end
+
+	return wheels
+end
+
+-- Measured once per model and cached on it. Weak keys, so a despawned vehicle
+-- does not keep its rig (or its parts) alive.
+function VehicleDefs.Rig(model, def)
+	if not model or not model.Parent then return nil end
+
+	local cached = rigCache[model]
+	if cached and cached.chassis and cached.chassis.Parent then return cached end
+
+	def = def or VehicleDefs.GetOrDerive(model:GetAttribute("Class"))
+
+	local chassis = model.PrimaryPart or model:FindFirstChild("Chassis")
+	if not chassis or not chassis:IsA("BasePart") then return nil end
+	-- Set for them: PivotTo, the seat offsets and the sweep all key off it,
+	-- and a model with a Chassis but no PrimaryPart is the common near-miss.
+	if not model.PrimaryPart then model.PrimaryPart = chassis end
+
+	local wheels = gatherWheels(model, chassis, def)
+
+	-- Wheelbase for the bicycle model: front axle to rear axle, measured.
+	local frontZ, rearZ, frontN, rearN = 0, 0, 0, 0
+	for _, wheel in ipairs(wheels) do
+		if wheel.front then frontZ += wheel.offset.Z; frontN += 1
+		else rearZ += wheel.offset.Z; rearN += 1 end
+	end
+	local wheelbase = (frontN > 0 and rearN > 0)
+		and math.abs(rearZ / rearN - frontZ / frontN)
+		or VehicleDefs.Wheelbase(def)
+
+	local rig = {
+		chassis = chassis,
+		size = chassis.Size,
+		wheels = wheels,
+		seats = gatherSeats(model, chassis, def),
+		wheelbase = math.max(wheelbase, 1),
+		def = def,
+	}
+
+	rigCache[model] = rig
+	return rig
+end
+
+-- The same shape, from the def's numbers alone and touching no Instances.
+-- Lets the sim be exercised without a world, and is what the tests run on.
+function VehicleDefs.NominalRig(def)
+	local wheels = {}
+	for _, anchor in ipairs(VehicleDefs.WheelAnchors(def)) do
+		table.insert(wheels, {
+			name = anchor.name,
+			offset = anchor.offset,
+			restRot = CFrame.Angles(0, 0, math.rad(90)),
+			radius = def.wheelRadius,
+			front = anchor.front,
+		})
+	end
+
+	local seats = {}
+	for i, seat in ipairs(def.seats) do
+		seats[i] = { offset = seat.offset, cf = CFrame.new(seat.offset), name = seat.name }
+	end
+
+	return {
+		size = def.size,
+		wheels = wheels,
+		seats = seats,
+		wheelbase = VehicleDefs.Wheelbase(def),
+		def = def,
+	}
+end
+
+-- Rest height from the RIG, so a model with big wheels parks on them rather
+-- than on the numbers in a table.
+function VehicleDefs.RigRestHeight(rig)
+	local radius = 0
+	for _, wheel in ipairs(rig.wheels) do radius = math.max(radius, wheel.radius) end
+	return radius
+		+ rig.def.suspension * (1 - VehicleDefs.RestCompression)
+		+ rig.size.Y * 0.5
 end
 
 --=====================================================================
