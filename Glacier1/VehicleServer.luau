@@ -275,10 +275,6 @@ local function chassisOf(model)
 	return model and model.PrimaryPart
 end
 
--- How much further than sv_vehicle_userange the server will accept. See
--- tryEnter: the client and server measure from different points on the player.
-local RANGE_SLACK = 3
-
 -- Refuses for a stated reason rather than silently: "nothing happened when I
 -- pressed E" is the single most annoying bug class in a use system.
 local function tryEnter(plr, model, seatIndex)
@@ -296,37 +292,26 @@ local function tryEnter(plr, model, seatIndex)
 	-- RANGE IS CHECKED HERE and nowhere else that matters. The client also
 	-- checks it, to decide whether to bother asking -- but that check is a
 	-- convenience and this one is the rule.
-	--
-	-- PositionOf, NOT RawBody.Position. The client owns movement and moves its
-	-- own RawBody by CFrame; the server's copy of that part never moves from
-	-- where the player spawned. Reading it here meant range was measured from
-	-- somewhere the player had not been since they loaded in, so +use worked
-	-- next to spawn and nowhere else. PositionOf prefers the Puppet on the
-	-- server, which PuppetSync actually keeps up to date. Same bug, same fix,
-	-- as weapon pickup.
-	local from = Glacier.PositionOf(plr, "player")
-	if not from then return false, "you have no body" end
-
+	local body = Glacier.RawBody(plr)
+	if not body then return false, "you have no body" end
+	local puppet = body:FindFirstChild("Puppet")
+	if not puppet then return false, "you have no puppet" end
+	
 	local range = Config.Get("sv_vehicle_userange") or 12
-
-	-- Slack, because the two ends do not measure from the same point: the
-	-- client measures from its hull and the server from the puppet's root,
-	-- which sits a couple of studs higher. Without it there is a band where
-	-- the client offers a car the server then refuses, which reads as the key
-	-- not working. Erring permissive is the right direction for a use key.
-	range += RANGE_SLACK
-
 	-- Measured to the chassis SURFACE, not its centre: a van is seven studs
 	-- wide, and a range measured to the middle of it would mean standing at
 	-- the door is further away than standing at the bumper.
-	local nearest = chassis.CFrame:PointToObjectSpace(from)
+	local nearest = chassis.CFrame:PointToObjectSpace(puppet:GetPivot().Position)
 	local half = chassis.Size * 0.5
 	local clamped = Vector3.new(
 		math.clamp(nearest.X, -half.X, half.X),
 		math.clamp(nearest.Y, -half.Y, half.Y),
 		math.clamp(nearest.Z, -half.Z, half.Z))
+	
+	
+	
 	if (nearest - clamped).Magnitude > range then
-		return false, "too far from that vehicle"
+		return false, "too far from that vehicle :u"..tostring( (nearest - clamped).Magnitude)
 	end
 
 	-- A requested seat is honoured if it is free; otherwise take the first
@@ -403,14 +388,8 @@ local function settleIgnore(model)
 	if drops then table.insert(ignore, drops) end
 
 	for _, plr in ipairs(Players:GetPlayers()) do
-		-- BOTH. The RawBody is the anchored hull and the Puppet is the visible
-		-- rig, they are in different places on the server, and a car resting
-		-- on either of them is a car hanging in the air.
 		local body = Glacier.RawBody(plr)
 		if body then table.insert(ignore, body) end
-
-		local puppet = Glacier.PuppetOf(plr)
-		if puppet then table.insert(ignore, puppet) end
 	end
 
 	return ignore
@@ -552,8 +531,8 @@ task.spawn(function()
 			if not model.Parent then
 				vehicles[model] = nil
 
-			-- A driven car is the client's to move. Touching it here would
-			-- fight the driver's own sim for the same CFrame.
+				-- A driven car is the client's to move. Touching it here would
+				-- fight the driver's own sim for the same CFrame.
 			elseif not driverOf(model) then
 				if entry.asleep then
 					if now - (entry.lastSettleCheck or 0) >= ASLEEP_RECHECK then
@@ -727,20 +706,11 @@ local function spawnPointFor(plr)
 	local body = plr and Glacier.RawBody(plr)
 	if not body then return CFrame.new(0, 5, 0) end
 
-	-- The PUPPET for both the position and the facing, for the same reason
-	-- tryEnter uses it: the server's copy of the RawBody sits wherever the
-	-- player spawned and is never re-oriented afterwards, so spawning off it
-	-- put the car near their spawn point, facing however they faced on the
-	-- frame they loaded in.
-	local root = Glacier.PuppetOf(plr)
-	root = root and root.PrimaryPart
-	local from = root and root.CFrame or body.CFrame
-
-	local look = from.LookVector
+	local look = body.CFrame.LookVector
 	local flat = Vector3.new(look.X, 0, look.Z)
 	flat = (flat.Magnitude > 1e-3) and flat.Unit or Vector3.zAxis
 
-	local ahead = from.Position + flat * 14
+	local ahead = body.Position + flat * 14
 
 	-- Find the GROUND under that point rather than using the spawner's own
 	-- height. body.Position is the centre of the hull, so it is already a
@@ -750,11 +720,11 @@ local function spawnPointFor(plr)
 	-- Started well above the point, not at it, so a car spawned facing a step
 	-- lands on the step rather than inside it.
 	local params = RaycastParams.new()
-	params.FilterDescendantsInstances = { body, Glacier.PuppetOf(plr), folder() }
+	params.FilterDescendantsInstances = { body, folder() }
 	params.FilterType = Enum.RaycastFilterType.Exclude
 
 	local hit = workspace:Raycast(ahead + Vector3.new(0, 20, 0), Vector3.new(0, -600, 0), params)
-	local ground = hit and hit.Position.Y or from.Position.Y
+	local ground = hit and hit.Position.Y or body.Position.Y
 
 	local at = Vector3.new(ahead.X, ground, ahead.Z)
 	-- The settle pass catches whatever this gets wrong, so a miss here is a
