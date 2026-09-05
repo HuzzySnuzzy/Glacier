@@ -89,8 +89,16 @@ local DEFAULTS = {
 	wheelRadius  = 1.1,
 	wheelWidth   = 0.7,
 
-	bodyRoll     = 0.55,      -- degrees of lean per stud/s^2 of lateral accel
-	bodyPitch    = 0.40,      -- and of dive/squat per stud/s^2 forward
+	-- Degrees of lean per stud/s^2 of tyre load. Read them against the
+	-- limits: at full grip (34) the sedan leans 7 degrees, and under full
+	-- braking (30) it dives 5. Those are about what a real car does.
+	--
+	-- 0.55 was chosen for "more bounce" and is what a car leans at the LIMIT
+	-- times two and a half -- so ordinary cornering sat against the 14-degree
+	-- bound, permanently at full lean and unable to express anything. Bounce
+	-- is bodyDamp's job; this is amplitude.
+	bodyRoll     = 0.21,
+	bodyPitch    = 0.17,
 
 	-- The BODY's own spring, separate from the suspension that holds the car
 	-- up. It decides how the shell leans and settles rather than where the
@@ -152,7 +160,7 @@ VehicleDefs.Classes = {
 		steerAngle = 38,
 		steerRate  = 4.4,       -- lighter car, quicker rack
 		understeer = 0.24,      -- and it pushes less than the sedan
-		bodyRoll   = 0.44,
+		bodyRoll   = 0.18,      -- 5.5 deg at its grip limit: flatter than the sedan
 	},
 
 	-- Heavy, tall, understeers, rolls a lot. Slow to stop, which is the point.
@@ -172,8 +180,8 @@ VehicleDefs.Classes = {
 		loadTransfer = 0.6,      -- tall and heavy: the weight really moves
 		wheelRadius = 1.35,
 		suspension  = 2.1,
-		bodyRoll    = 0.85,
-		bodyPitch   = 0.5,
+		bodyRoll    = 0.37,     -- 10 deg at its limit: it is tall and it shows
+		bodyPitch   = 0.3,
 	},
 }
 
@@ -367,14 +375,41 @@ local function restDrop(def)
 	return def.suspension * (1 - VehicleDefs.RestCompression)
 end
 
+-- The ROLLING radius, for how fast the wheel spins. Roblox cylinders lie along
+-- their own X, so the radius is on the other two axes; the larger of them is
+-- also a sane answer for a ball, a block or an imported mesh.
 local function wheelRadiusOf(part)
 	return math.max(part.Size.Y, part.Size.Z) * 0.5
 end
 
+-- How far the wheel reaches DOWN from its own centre, in chassis space.
+--
+-- Not the same number as the rolling radius, and this is what decides where
+-- the road is. wheelRadiusOf measures in the part's OWN frame, but a wheel is
+-- rotated -- a Roblox cylinder has to be turned on its side to stand up at
+-- all -- so the part's local Y is not the chassis's vertical. Using the
+-- rolling radius as a height is right only when the wheel happens to be
+-- authored axis-aligned, and wrong by however much it is not, which shows up
+-- as a car parked slightly above the road.
+--
+-- The exact half-height of the rotated box: each of its own half-extents
+-- projected onto the chassis's up axis.
+local function wheelGroundOffset(part, restRot)
+	local half = part.Size * 0.5
+	return math.abs(restRot.RightVector.Y) * half.X
+		+ math.abs(restRot.UpVector.Y) * half.Y
+		+ math.abs(restRot.LookVector.Y) * half.Z
+end
+
+-- Only a folder named Wheels, and only its own descendants. Falling back to
+-- the whole MODEL means every part in it becomes a wheel -- the seats, the
+-- bonnet, an aerial -- each with its own radius, and the biggest of them
+-- decides how high the car parks. A model without a Wheels folder gets the
+-- nominal layout instead, which is at least coherent.
 local function wheelsFolder(model)
 	local found = model:FindFirstChild("Wheels")
-	if found then return found end
-	return model
+	if found and (found:IsA("Folder") or found:IsA("Model")) then return found end
+	return nil
 end
 
 -- Roblox Seats are not passive. A Seat with a Humanoid touching it welds that
@@ -452,7 +487,7 @@ local function gatherWheels(model, chassis, def)
 	local wheels = {}
 	local container = wheelsFolder(model)
 
-	for _, part in ipairs(container:GetDescendants()) do
+	for _, part in ipairs(container and container:GetDescendants() or {}) do
 		if part:IsA("BasePart") and part ~= chassis then
 			local cf = localOffset(chassis, part)
 			-- WHERE YOU PUT THE WHEEL IS WHERE IT SITS AT REST. That is the
@@ -465,13 +500,15 @@ local function gatherWheels(model, chassis, def)
 			-- The strut top is derived from it instead, which is the same
 			-- geometry read the other way round.
 			local rest = cf.Position
+			local restRot = cf.Rotation
 			table.insert(wheels, {
 				part = part,
 				name = part.Name,
 				rest = rest,
 				offset = rest + Vector3.new(0, restDrop(def), 0),
-				restRot = cf.Rotation,
+				restRot = restRot,
 				radius = wheelRadiusOf(part),
+				ground = wheelGroundOffset(part, restRot),
 			})
 		end
 	end
@@ -486,9 +523,11 @@ local function gatherWheels(model, chassis, def)
 				name = anchor.name,
 				rest = anchor.offset - Vector3.new(0, restDrop(def), 0),
 				offset = anchor.offset,
-				-- Standing a Roblox cylinder up: they lie along their own X.
-				restRot = CFrame.Angles(0, 0, math.rad(90)),
+				-- Identity: a Roblox cylinder's axle is already its own X, which
+				-- on a car is sideways. See the note in Build.
+				restRot = CFrame.identity,
 				radius = def.wheelRadius,
+				ground = def.wheelRadius,
 				front = anchor.front,
 			})
 		end
@@ -566,8 +605,9 @@ function VehicleDefs.NominalRig(def)
 			name = anchor.name,
 			rest = anchor.offset - Vector3.new(0, restDrop(def), 0),
 			offset = anchor.offset,
-			restRot = CFrame.Angles(0, 0, math.rad(90)),
+			restRot = CFrame.identity,
 			radius = def.wheelRadius,
+			ground = def.wheelRadius,
 			front = anchor.front,
 		})
 	end
@@ -598,9 +638,11 @@ end
 function VehicleDefs.RigRestHeight(rig)
 	local needed = 0
 	for _, wheel in ipairs(rig.wheels) do
-		-- rest.Y is negative for a wheel below the chassis centre, so this is
-		-- how far the centre must be above the ground for THIS wheel to touch.
-		needed = math.max(needed, wheel.radius - wheel.rest.Y)
+		-- The GROUND offset, not the rolling radius: how far this wheel
+		-- reaches down in chassis space. rest.Y is negative for a wheel below
+		-- the chassis centre, so this is how far the centre must be above the
+		-- ground for THIS wheel to touch.
+		needed = math.max(needed, (wheel.ground or wheel.radius) - wheel.rest.Y)
 	end
 	if needed <= 0 then
 		-- No wheels at all: fall back to the box, which at least keeps the
@@ -682,14 +724,20 @@ function VehicleDefs.Build(class)
 		wheel.Shape = Enum.PartType.Cylinder
 		wheel.Material = Enum.Material.Rubber
 
-		-- Placed at the REST position now, and not welded. Only a car being
-		-- driven or watched gets its wheels positioned by the suspension, so
-		-- a parked one would otherwise sit with all four stacked at the
-		-- chassis centre until somebody got in. The quarter turn about Z is
-		-- what stands a Roblox cylinder up -- they point down their X axis.
+		-- Placed at the REST position, and not welded: only a car being driven
+		-- or watched gets its wheels positioned by the suspension, so a parked
+		-- one would otherwise sit with all four stacked at the chassis centre
+		-- until somebody got in.
+		--
+		-- NO ROTATION, and the quarter turn about Z that used to be here was
+		-- simply wrong. A Roblox cylinder's circular faces are on its own X,
+		-- so its axle already points along X -- which on a car is sideways,
+		-- exactly where a wheel's axle belongs. Turning it 90 degrees about Z
+		-- stands the axle UP: a disc lying flat on the road, which then spun
+		-- like a turntable, because the spin is applied about the wheel's own
+		-- X after this rotation.
 		wheel.CFrame = CFrame.new(
-				anchor.offset - Vector3.new(0, def.suspension * (1 - VehicleDefs.RestCompression), 0))
-			* CFrame.Angles(0, 0, math.rad(90))
+			anchor.offset - Vector3.new(0, def.suspension * (1 - VehicleDefs.RestCompression), 0))
 	end
 
 	-- Seats are Attachments ON THE CHASSIS rather than parts in a folder.

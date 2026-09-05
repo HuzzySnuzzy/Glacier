@@ -192,7 +192,8 @@ local function probeSuspension(s)
 		-- Per-wheel radius, measured off the part. A model with 1.4-stud
 		-- wheels must not be simulated as though it had 1.1-stud ones, and
 		-- a model with a big pair on the back is a thing people build.
-		local reach = def.suspension + wheel.radius * 2
+		local ground = wheel.ground or wheel.radius
+		local reach = def.suspension + ground * 2
 		local origin = s.cf * wheel.offset
 		local hit = workspace:Raycast(origin, -s.cf.UpVector * reach, s.params)
 
@@ -200,7 +201,7 @@ local function probeSuspension(s)
 			-- 0 at full droop, 1 at fully compressed. Past 1 means the wheel
 			-- is jammed into geometry, which the spring answers very hard.
 			local compression = 1 - math.clamp(
-				(hit.Distance - wheel.radius) / math.max(def.suspension, 0.05), 0, 1)
+				(hit.Distance - ground) / math.max(def.suspension, 0.05), 0, 1)
 
 			contacts[i] = {
 				position = hit.Position,
@@ -320,6 +321,13 @@ end
 -- Iterated, because resolving one overlap can create another -- a car wedged
 -- in a corner has to come out along both faces -- but bounded, because two
 -- walls closing on a car have no solution and the alternative is a hang.
+-- How far the body may lean, either way. See the bound() note in the step.
+local BODY_ANGLE_LIMIT = 14
+
+-- Steeper than this is a wall, not a road, and a car does not lie on it. The
+-- player movement code draws the same line at 0.75.
+local MIN_RESTING_NORMAL_Y = 0.5
+
 local MAX_DEPEN_PASSES = 4
 local DEPEN_EPS = 0.01
 
@@ -492,6 +500,14 @@ local function step(s, dt)
 	--------------------------------------------------------------
 	local accel = Vector3.zero
 
+	-- The tyre forces ALONE, kept apart from gravity and the suspension.
+	-- These are what actually load the springs, and so they are what the body
+	-- leans in response to. Using the total acceleration for that -- which is
+	-- what this did -- puts GRAVITY into the lean, and gravity has a sideways
+	-- component the moment the car is tilted at all. See the note on the
+	-- render frame below: together those two made a loop with a gain of 1.9.
+	local tyre = Vector3.zero
+
 	if grounded then
 		-- Traction scales with how many wheels are down, so a car cresting a
 		-- hill on two wheels does not accelerate as if it were planted.
@@ -500,30 +516,30 @@ local function step(s, dt)
 		if throttleAxis > 0.01 then
 			if roadSpeed < -1 then
 				-- Forward while rolling backwards is braking, not launching.
-				accel += forward * def.brake * traction * throttleAxis
+				tyre += forward * def.brake * traction * throttleAxis
 			else
 				-- Constant force. The top speed is set by DRAG, not by a cap
 				-- here -- VehicleDefs derives the drag coefficient from drive
 				-- and topSpeed precisely so these two cannot disagree.
-				accel += forward * def.drive * powerScale * traction * throttleAxis
+				tyre += forward * def.drive * powerScale * traction * throttleAxis
 			end
 
 		elseif throttleAxis < -0.01 then
 			if roadSpeed > 1 then
-				accel += forward * -def.brake * traction * -throttleAxis
+				tyre += forward * -def.brake * traction * -throttleAxis
 			else
 				-- Reverse DOES get a hard falloff, because reverse is one
 				-- gear and running out of revs in it is exactly what happens.
 				-- Drag alone would let you reverse at sixty.
 				local headroom = 1 - math.clamp(-roadSpeed / def.topReverse, 0, 1)
-				accel += forward * -def.reverse * powerScale * traction * -throttleAxis * headroom
+				tyre += forward * -def.reverse * powerScale * traction * -throttleAxis * headroom
 			end
 		end
 
 		if handbrake then
 			-- Rear wheels locked. Kills forward speed and, below, most of the
 			-- rear grip -- which together is what a handbrake turn IS.
-			accel += forward * -math.sign(roadSpeed) * def.brake * 0.55 * traction
+			tyre += forward * -math.sign(roadSpeed) * def.brake * 0.55 * traction
 		end
 	end
 
@@ -553,7 +569,7 @@ local function step(s, dt)
 		-- accel so far is the drivetrain and the brakes and nothing else, so
 		-- this is exactly the longitudinal effort the tyres are being asked
 		-- for -- which is what moves the weight.
-		local longEffort = accel:Dot(forward)
+		local longEffort = tyre:Dot(forward)
 		local transfer = math.clamp(longEffort / math.max(def.grip * gripScale, 1), -1, 1)
 
 		local frontGrip = limit * (1 - transfer * def.loadTransfer)
@@ -581,7 +597,7 @@ local function step(s, dt)
 		-- by balance -- but each END saturates on its own, and that is what
 		-- the yaw model below reads.
 		local total = frontGrip * (1 - def.balance) + rearGrip * def.balance
-		accel += right * math.clamp(demand, -total, total)
+		tyre += right * math.clamp(demand, -total, total)
 
 		local function saturation(available)
 			if available <= 1e-3 then return 1 end
@@ -599,6 +615,10 @@ local function step(s, dt)
 	--------------------------------------------------------------
 	-- 6. DRAG + GRAVITY
 	--------------------------------------------------------------
+	-- Everything the tyres are doing folds into the total here, and nothing
+	-- reads `tyre` again except the body lean.
+	accel += tyre
+
 	if speed > 1e-3 then
 		local drag = def.dragLinear + def.dragQuad * speed
 		accel -= vel.Unit * drag * speed
@@ -740,13 +760,22 @@ local function step(s, dt)
 	--------------------------------------------------------------
 	-- 11. ORIENTATION  (drawn, per the header)
 	--------------------------------------------------------------
-	local targetUp = grounded and groundNormal or Vector3.yAxis
+	-- A surface too steep to rest on is not a surface to lie flat against.
+	-- Without this, a car that got onto its side aligned to whatever its now
+	-- sideways suspension rays were hitting and stayed there -- the second
+	-- half of the flip-and-stick, and worth blocking on its own even though
+	-- the cause is fixed, because a genuine rollover down a steep bank
+	-- should end with the car righting itself rather than welded to a cliff.
+	local restable = grounded and groundNormal.Y >= MIN_RESTING_NORMAL_Y
+	local targetUp = restable and groundNormal or Vector3.yAxis
 
 	-- Load transfer. Lateral acceleration leans the body out of the corner,
 	-- longitudinal dives or squats it. Both are pure appearance and both are
 	-- most of what makes a car feel heavy.
-	local lateralG = accel:Dot(right)
-	local longG = accel:Dot(forward)
+	-- From the TYRE forces, not the total. Gravity is not a cornering load,
+	-- and including it meant a tilted car leaned because it was tilted.
+	local lateralG = tyre:Dot(right)
+	local longG = tyre:Dot(forward)
 
 	-- A SECOND-ORDER spring, not a lerp. The old first-order approach could
 	-- only ever ease toward the target and stop, which reads as a shell bolted
@@ -761,6 +790,18 @@ local function step(s, dt)
 		s.rollTarget, def.bodyHz, def.bodyDamp, dt)
 	s.pitchAngle, s.pitchRate = dampedSpring(s.pitchAngle or 0, s.pitchRate or 0,
 		s.pitchTarget, def.bodyHz, def.bodyDamp, dt)
+
+	-- Bounded, and the rate zeroed at the stop. Body lean is a decoration; a
+	-- decoration that can reach 90 degrees is a car lying on its side, and no
+	-- tuning value should be able to produce one. Cheap insurance against the
+	-- next person raising bodyRoll and finding out the hard way.
+	local function bound(angle, rate, limit)
+		if angle > limit then return limit, math.min(rate, 0) end
+		if angle < -limit then return -limit, math.max(rate, 0) end
+		return angle, rate
+	end
+	s.rollAngle, s.rollRate = bound(s.rollAngle, s.rollRate, BODY_ANGLE_LIMIT)
+	s.pitchAngle, s.pitchRate = bound(s.pitchAngle, s.pitchRate, BODY_ANGLE_LIMIT)
 
 	-- Slower than it was: the shell should look like it is catching up with
 	-- the ground rather than welded to it.
@@ -783,8 +824,22 @@ local function step(s, dt)
 	-- floating level over it. The yaw convention and both degenerate cases
 	-- live in VehicleDefs.OrientCF, shared with the server's settle pass --
 	-- one place for a sign that has already been wrong once.
+	-- TWO FRAMES, and keeping them apart is the whole of this fix.
+	--
+	-- s.cf is the PHYSICS frame: where the car is, which way it points, and
+	-- what it is lying on. Nothing decorative goes in it.
+	--
+	-- s.renderCf is that frame plus the body lean, and it exists only to be
+	-- drawn. It used to BE s.cf -- the lean was baked in -- and the next step
+	-- then read `forward` and `right` off a rolled frame and dotted gravity
+	-- into them. A car tilted by one degree therefore asked for nearly two
+	-- degrees of lean, which asked for four, and the car flipped onto its
+	-- side and stayed there: once vertical, the suspension rays point
+	-- sideways, find a wall, and report it as the ground to lie on.
+	--
+	-- The header has always said pitch and roll are DRAWN, not simulated.
+	-- This is the code finally agreeing with it.
 	s.cf = VehicleDefs.OrientCF(pos, s.yaw, s.up)
-		* CFrame.Angles(math.rad(s.pitchAngle), 0, math.rad(s.rollAngle))
 
 	--------------------------------------------------------------
 	-- 11b. DEPENETRATION
@@ -820,6 +875,10 @@ local function step(s, dt)
 	s.contacts = contacts
 	s.deepest = deepest
 	s.lastHit = hit
+
+	-- Built last, from the finished physics frame. Everything downstream that
+	-- DRAWS reads this; everything that simulates reads s.cf.
+	s.renderCf = s.cf * CFrame.Angles(math.rad(s.pitchAngle), 0, math.rad(s.rollAngle))
 end
 
 --=====================================================================
@@ -841,7 +900,7 @@ local function drawWheels(rig, cf, steer, spin, contacts)
 			local drop = restDrop
 			local contact = contacts and contacts[i]
 			if contact then
-				drop = math.clamp(contact.distance - wheel.radius, 0, def.suspension)
+				drop = math.clamp(contact.distance - (wheel.ground or wheel.radius), 0, def.suspension)
 			end
 
 			-- Steer about the CHASSIS up axis, before the wheel's own rotation.
@@ -951,6 +1010,7 @@ local function startDriving(model, def, index)
 		def = def,
 		rig = rig,
 		cf = chassis.CFrame,
+		renderCf = chassis.CFrame,
 		prevCf = chassis.CFrame,
 		vel = Vector3.zero,
 		yaw = yaw,
@@ -1282,7 +1342,9 @@ function Vehicle.Update(deltaTime)
 			fixedDelta * num(Config.sv_MaxCatchupSteps, 8))
 
 		while accumulator >= fixedDelta do
-			sim.prevCf = sim.cf
+			-- The RENDER frame is what gets interpolated, so the body lean is
+			-- smooth between steps too rather than snapping on each one.
+			sim.prevCf = sim.renderCf or sim.cf
 			step(sim, fixedDelta)
 			accumulator -= fixedDelta
 		end
@@ -1292,7 +1354,7 @@ function Vehicle.Update(deltaTime)
 		-- without this the difference reads as stutter at any frame rate that
 		-- is not an exact multiple of the tick.
 		local alpha = math.clamp(accumulator / fixedDelta, 0, 1)
-		local renderCf = sim.prevCf:Lerp(sim.cf, alpha)
+		local renderCf = sim.prevCf:Lerp(sim.renderCf or sim.cf, alpha)
 
 		seatModel:PivotTo(renderCf)
 		drawWheels(rig, renderCf, sim.steer, sim.wheelSpin, sim.contacts)
@@ -1320,7 +1382,9 @@ function Vehicle.Sync()
 
 	send:FireServer({
 		vehicle = sim.model,
-		cf = sim.cf,
+		-- What it LOOKS like, so other clients see the same lean the driver
+		-- does. The server only reads the position out of this.
+		cf = sim.renderCf or sim.cf,
 		vel = sim.vel,
 		steer = sim.steer,
 		wheelSpin = sim.wheelSpin,

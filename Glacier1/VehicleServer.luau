@@ -431,7 +431,10 @@ local function probeWheels(model, rig, params, lift, reach)
 			-- Distance measured back to the ANCHOR, so a surface above the
 			-- anchor comes out negative and the car gets pushed out.
 			local surface = hit.Distance - lift
-			local slack = surface - (wheel.radius + restTravel)
+			-- The GROUND offset: how far the wheel reaches down in chassis
+			-- space, which is not the rolling radius once the wheel is
+			-- rotated. The client's suspension measures the same way.
+			local slack = surface - ((wheel.ground or wheel.radius) + restTravel)
 			if not gap or slack < gap then gap = slack end
 			normalSum += hit.Normal
 			hits += 1
@@ -847,6 +850,54 @@ Config.Command("vehicle_flip", {
 		model:PivotTo(CFrame.new(chassis.Position + Vector3.new(0, 3, 0)) * CFrame.Angles(0, yaw, 0))
 		wake(model)   -- lifted clear; the settle pass puts it back down
 		reply(ctx, "[vehicle] flipped")
+		return true
+	end,
+})
+
+Config.Command("vehicle_rig", {
+	flag = SERVER,
+	help = "print the measured geometry of the nearest vehicle",
+	run = function(ctx)
+		local plr = ctx and ctx.player
+		local origin = plr and Glacier.PositionOf(plr, "player")
+
+		local best, bestDist
+		for model in pairs(vehicles) do
+			local chassis = chassisOf(model)
+			if chassis then
+				local d = origin and (chassis.Position - origin).Magnitude or 0
+				if not bestDist or d < bestDist then best, bestDist = model, d end
+			end
+		end
+		if not best then return false, "no vehicles spawned" end
+
+		local entry = vehicles[best]
+		local rig = entry.rig
+		local def = rig.def
+		local rest = VehicleDefs.RigRestHeight(rig)
+
+		local lines = {
+			("[rig] %s  class %s"):format(best.Name, tostring(def.class)),
+			("  chassis   %s  size %.2f %.2f %.2f"):format(
+				rig.chassis.Name, rig.size.X, rig.size.Y, rig.size.Z),
+			("  wheelbase %.2f   seats %d   rest height %.3f")
+				:format(rig.wheelbase, #rig.seats, rest),
+			("  suspension %.2f  travel below rest %.2f")
+				:format(def.suspension, def.suspension * (1 - VehicleDefs.RestCompression)),
+			"  wheel        rest Y   reach down  roll radius  bottom at rest",
+		}
+
+		for _, wheel in ipairs(rig.wheels) do
+			local ground = wheel.ground or wheel.radius
+			-- Where this wheel's underside ends up once the car is parked.
+			-- Zero means resting exactly on the road; positive is the float.
+			local bottom = rest + wheel.rest.Y - ground
+			table.insert(lines, ("  %-10s %8.3f %11.3f %12.3f %14.3f%s"):format(
+				wheel.name, wheel.rest.Y, ground, wheel.radius, bottom,
+				(math.abs(bottom) > 0.01) and "  <-- not touching" or ""))
+		end
+
+		reply(ctx, table.concat(lines, "\n"))
 		return true
 	end,
 })
