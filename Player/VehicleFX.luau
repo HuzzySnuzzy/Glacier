@@ -13,10 +13,17 @@
 -- WHAT IT LOOKS FOR, all of it optional. A model missing any of this simply
 -- gets less, and a model with none of it is silent rather than broken:
 --
---   Chassis/Engine          Sound   pitched from rpm
+--   Chassis/Engine          Sound   looped, pitched from rpm
+--   Chassis/Backfire        Sound   one shot on a backfire
+--   Chassis/TireScreech     Sound   looped, volume and pitch from slip
 --   Exhaust/Backfire        ParticleEmitter   burst on an upshift
 --   Exhaust/Smoke           ParticleEmitter   idle haze, thicker under power
 --   Wheels/<wheel>/Smoke    ParticleEmitter   per wheel, on slip or lock-up
+--
+-- The backfire has a particle and a sound and they are found in different
+-- places -- the emitter under Exhaust, where you would model it, and the
+-- sound under Chassis, where the engine already is. Both are optional and
+-- either alone is a complete effect.
 --
 -- Names are matched case-insensitively and by CONTAINMENT, so "EngineSound",
 -- "engine_loop" and "Engine" all work. Art gets named by hand and this should
@@ -47,9 +54,23 @@ local function fxOf(model, rig)
 	local chassis = rig.chassis
 	local exhaust = model:FindFirstChild("Exhaust")
 
+	local audio = model:FindFirstChild("Chassis") or chassis
+
 	local fx = {
-		engine = findByName(model:FindFirstChild("Chassis") or chassis, "engine", "Sound")
+		engine = findByName(audio, "engine", "Sound")
 			or findByName(chassis, "engine", "Sound"),
+
+		-- "screech" rather than "tire", because the wheels are already called
+		-- tyres and matching on that would pick up a rolling-noise loop or a
+		-- tyre-blowout one-shot sitting beside it. Both spellings, since the
+		-- part names in this model are American and the code is not.
+		screech = findByName(audio, "screech", "Sound")
+			or findByName(audio, "skid", "Sound")
+			or findByName(chassis, "screech", "Sound"),
+
+		backfireSound = findByName(audio, "backfire", "Sound")
+			or findByName(chassis, "backfire", "Sound"),
+
 		backfire = findByName(exhaust, "backfire", "ParticleEmitter"),
 		exhaust = findByName(exhaust, "smoke", "ParticleEmitter"),
 		wheelSmoke = {},
@@ -66,6 +87,16 @@ local function fxOf(model, rig)
 	-- toward zero from them, so tuning the look stays in Studio.
 	fx.baseRates = {}
 	if fx.exhaust then fx.baseRates.exhaust = fx.exhaust.Rate end
+
+	-- The screech is a LOOP whose volume is the effect, so the artist's volume
+	-- is the loud end the same way their Rate is. Captured before anything
+	-- here touches it, or the first quiet frame would become the new maximum
+	-- and the sound would fade away over the session.
+	if fx.screech then
+		fx.screechVolume = fx.screech.Volume
+		fx.screechPitch = fx.screech.PlaybackSpeed
+		fx.screech.Volume = 0
+	end
 	if fx.backfire then fx.baseRates.backfire = fx.backfire.Rate end
 	for i, emitter in pairs(fx.wheelSmoke) do
 		fx.baseRates[i] = emitter.Rate
@@ -92,6 +123,10 @@ end
 -- it with the Sound's own PlaybackSpeed as a starting point.
 local MIN_PITCH = 0.55
 local MAX_PITCH = 2.2
+
+-- Below this much slip the tyres are gripping as far as anyone listening is
+-- concerned, and the screech stays silent. See the note where it is used.
+local SCREECH_FLOOR = 0.18
 
 local function enginePitch(def, rpm)
 	local span = math.max(def.redlineRpm - def.idleRpm, 1)
@@ -140,6 +175,15 @@ function VehicleFX.Update(model, rig, state, deltaTime)
 		fx.backfire:Emit(count)
 	end
 
+	-- The crack. Rewound rather than just played, because a second shift
+	-- inside the length of the sample would otherwise be silent -- Play on an
+	-- already-playing Sound does nothing, and two fast upshifts is exactly
+	-- when you want to hear two bangs.
+	if fx.backfireSound and state.backfired then
+		fx.backfireSound.TimePosition = 0
+		fx.backfireSound:Play()
+	end
+
 	--------------------------------------------------------------
 	-- EXHAUST
 	--------------------------------------------------------------
@@ -172,6 +216,36 @@ function VehicleFX.Update(model, rig, state, deltaTime)
 		local amount = grounded and slip or 0
 		emitter.Rate = (base[i] or 20) * math.clamp(amount, 0, 1)
 	end
+
+	--------------------------------------------------------------
+	-- TYRE SCREECH
+	--------------------------------------------------------------
+	-- One loop for the whole car rather than one per wheel, driven by
+	-- whichever end is sliding hardest. Four overlapping copies of the same
+	-- sample is not four times the tyre noise, it is a phasing mess.
+	if fx.screech then
+		local slip = grounded and math.max(front, rear) or 0
+
+		-- A DEAD BAND, because slip is never exactly zero: a car tracking
+		-- straight down a road carries a percent or two of it, and mapping
+		-- that straight to volume means the tyres howl quietly all the time
+		-- and the effect stops meaning anything.
+		local voice = math.clamp((slip - SCREECH_FLOOR) / (1 - SCREECH_FLOOR), 0, 1)
+
+		fx.screech.Volume = (fx.screechVolume or 0.5) * voice
+		-- Rising slightly as it gets worse, so a slow slide and a full lock-up
+		-- are told apart by more than loudness.
+		fx.screech.PlaybackSpeed = (fx.screechPitch or 1) * (0.9 + voice * 0.3)
+
+		if voice > 0 then
+			if not fx.screech.IsPlaying then
+				fx.screech.Looped = true
+				fx.screech:Play()
+			end
+		elseif fx.screech.IsPlaying then
+			fx.screech:Stop()
+		end
+	end
 end
 
 -- Called when a car stops being driven or watched, so it does not sit there
@@ -181,6 +255,10 @@ function VehicleFX.Quiet(rig)
 	if not fx then return end
 
 	if fx.engine and fx.engine.IsPlaying then fx.engine:Stop() end
+	if fx.screech then
+		fx.screech.Volume = 0
+		if fx.screech.IsPlaying then fx.screech:Stop() end
+	end
 	if fx.exhaust then fx.exhaust.Rate = 0 end
 	if fx.backfire then fx.backfire.Rate = 0 end
 	for _, emitter in pairs(fx.wheelSmoke) do emitter.Rate = 0 end

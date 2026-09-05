@@ -352,6 +352,21 @@ function VehicleDefs.WheelOffset(def, wheel, contact)
 	return drop - restDrop
 end
 
+-- Every BasePart a wheel is built from -- the one the sim measures first, then
+-- anything held rigid to it.
+--
+-- The server anchors what this returns. A part it misses is a part Roblox goes
+-- on simulating while the engine moves the car by CFrame around it, which
+-- looks exactly like the wheel falling off.
+function VehicleDefs.WheelParts(wheel)
+	local parts = {}
+	if wheel.part then table.insert(parts, wheel.part) end
+	for _, extra in ipairs(wheel.extras or {}) do
+		if extra.part then table.insert(parts, extra.part) end
+	end
+	return parts
+end
+
 function VehicleDefs.HeadingFromYaw(yaw)
 	return Vector3.new(-math.sin(yaw), 0, -math.cos(yaw))
 end
@@ -433,9 +448,6 @@ local function localOffset(chassis, part)
 	return chassis.CFrame:ToObjectSpace(part.CFrame)
 end
 
--- A wheel's radius from its size. Roblox cylinders lie along their own X, so
--- the radius is on the other two axes; taking the larger of them also gives a
--- sane answer for a ball, a block or an imported mesh.
 -- How far the wheel hangs below its strut top when the car is parked. The one
 -- number that relates "where the wheel is drawn" to "where the ray starts",
 -- and it is wanted in four places, so it is not written out four times.
@@ -551,6 +563,28 @@ local function gatherSeats(model, chassis, def)
 	return fallback
 end
 
+-- The parts of a wheel that are NOT the one the sim measures: a brake disc, a
+-- hub cap, a spare tyre mesh sitting inside the tyre. Recorded with their
+-- offset from the measured part so they can be drawn rigid to it.
+--
+-- They have to be recorded at all because of what happens to a part this
+-- system does not know about. Nothing draws it, so it does not follow the
+-- car; and the server anchors what the rig lists, so an unlisted part is left
+-- unanchored and Roblox drops it on the floor. That is the bug this exists to
+-- stop -- wheels visibly falling off a moving car.
+local function gatherExtras(holder, part)
+	if holder == part or not holder then return nil end
+
+	local extras
+	for _, other in ipairs(holder:GetDescendants()) do
+		if other:IsA("BasePart") and other ~= part then
+			extras = extras or {}
+			table.insert(extras, { part = other, cf = localOffset(part, other) })
+		end
+	end
+	return extras
+end
+
 local function gatherWheels(model, chassis, def)
 	local wheels = {}
 	local container = wheelsFolder(model)
@@ -562,15 +596,51 @@ local function gatherWheels(model, chassis, def)
 	-- since the ride height is decided by whichever reaches lowest, one stray
 	-- child was enough to park the car wrong and cast rays from inside itself.
 	--
-	-- A child Model is followed to its PrimaryPart, so a wheel built as an
-	-- assembly still works; anything else is ignored.
+	-- A child that is not itself a part is followed INTO, because ignoring it
+	-- is worse than counting it twice. Every part the rig does not find is a
+	-- part nothing anchors and nothing draws -- so a wheel modelled as an
+	-- assembly, or one whose Model has no PrimaryPart set, was left behind by
+	-- the chassis and dropped through the world under Roblox's own physics.
+	-- Wheels falling off is a more visible failure than a car parked an inch
+	-- high, and it is the one this cost.
+	--
+	-- PrimaryPart first, since that is the modeller SAYING which part is the
+	-- wheel; failing that, the biggest part in the subtree, which for a wheel
+	-- assembly is the tyre and not the brake disc or the lug nuts.
 	local function wheelPartOf(child)
 		if child:IsA("BasePart") then return child end
-		if child:IsA("Model") then return child.PrimaryPart end
-		return nil
+
+		local best, bestVolume = nil, -1
+		if child:IsA("Model") and child.PrimaryPart then return child.PrimaryPart end
+		for _, part in ipairs(child:GetDescendants()) do
+			if part:IsA("BasePart") then
+				local size = part.Size
+				local volume = size.X * size.Y * size.Z
+				if volume > bestVolume then
+					best, bestVolume = part, volume
+				end
+			end
+		end
+		return best
 	end
 
-	for _, child in ipairs(container and container:GetChildren() or {}) do
+	-- One entry per wheel-shaped child. A FOLDER is a grouping rather than a
+	-- wheel -- somebody who puts their fronts and rears in subfolders means
+	-- four wheels, not two -- so folders are flattened and everything else is
+	-- a candidate.
+	local candidates = {}
+	local function collect(node)
+		for _, child in ipairs(node:GetChildren()) do
+			if child:IsA("Folder") then
+				collect(child)
+			else
+				table.insert(candidates, child)
+			end
+		end
+	end
+	if container then collect(container) end
+
+	for _, child in ipairs(candidates) do
 		local part = wheelPartOf(child)
 		if part and part ~= chassis then
 			local cf = localOffset(chassis, part)
@@ -596,6 +666,9 @@ local function gatherWheels(model, chassis, def)
 				-- The CHILD, not the part, so a wheel built as a Model has
 				-- its emitters found under the thing you actually named.
 				holder = child,
+				-- Everything else the wheel is made of, held rigid to the
+				-- part above. See gatherExtras.
+				extras = gatherExtras(child, part),
 			})
 		end
 	end

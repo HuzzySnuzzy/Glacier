@@ -234,10 +234,14 @@ local function spawnVehicle(class, cframe)
 
 	-- Wheels are drawn, never collided. A wheel that collides catches on the
 	-- geometry its own suspension ray is measuring.
+	--
+	-- EVERY part of the wheel, not just the one the sim measures. A brake disc
+	-- or a hub cap left unanchored is simulated by Roblox while this engine
+	-- CFrames the car out from under it, and it falls to the floor.
 	for _, wheel in ipairs(rig.wheels) do
-		if wheel.part then
-			wheel.part.Anchored = true
-			wheel.part.CanCollide = false
+		for _, part in ipairs(VehicleDefs.WheelParts(wheel)) do
+			part.Anchored = true
+			part.CanCollide = false
 		end
 	end
 

@@ -1043,11 +1043,22 @@ local function drawWheels(rig, cf, steer, spin, contacts)
 			-- a Roblox cylinder. A wheel modelled around a different axis will roll
 			-- about the wrong one; that is the one thing here that art has to match
 			-- rather than declare.
-			part.CFrame = cf
+			local placed = cf
 				* CFrame.new(wheel.rest - Vector3.new(0, travel, 0))
 				* steerRot
 				* wheel.restRot
 				* CFrame.Angles(spin, 0, 0)
+			part.CFrame = placed
+
+			-- Anything else the wheel is built from, carried rigid to it. The
+			-- rig recorded each one's offset from the measured part, so a
+			-- brake disc turns and steers with its own wheel instead of being
+			-- anchored to a spot in the world and left behind.
+			for _, extra in ipairs(wheel.extras or {}) do
+				if extra.part then
+					extra.part.CFrame = placed * extra.cf
+				end
+			end
 		end
 	end
 end
