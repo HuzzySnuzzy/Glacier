@@ -60,7 +60,7 @@ local DEFAULTS = {
 	-- How hard the tyres fight sideways motion before they saturate. Low is
 	-- vague and floaty, high is darty; this is the "connected to the road"
 	-- number and it is separate from how much grip there is in total.
-	gripResponse = 6,
+	gripResponse = 5,
 
 	-- LOAD TRANSFER, as a fraction of grip moved front-to-rear by a full
 	-- braking or accelerating effort. This is the mechanism behind most of
@@ -84,13 +84,21 @@ local DEFAULTS = {
 
 	suspension   = 1.6,       -- travel
 	springHz     = 1.5,       -- undamped natural frequency of the springs
-	springDamp   = 0.42,      -- 1 is critical; under it the car breathes
+	springDamp   = 0.28,      -- 1 is critical; under it the car breathes
 
 	wheelRadius  = 1.1,
 	wheelWidth   = 0.7,
 
 	bodyRoll     = 0.55,      -- degrees of lean per stud/s^2 of lateral accel
 	bodyPitch    = 0.40,      -- and of dive/squat per stud/s^2 forward
+
+	-- The BODY's own spring, separate from the suspension that holds the car
+	-- up. It decides how the shell leans and settles rather than where the
+	-- car is, and it is second-order on purpose: a first-order approach can
+	-- only ease toward its target and stop, which reads as a car whose body
+	-- is bolted solid. Under-damped, so it overshoots and comes back.
+	bodyHz       = 1.1,
+	bodyDamp     = 0.35,      -- well under 1: that overshoot IS the bounce
 
 	restitution  = 0.25,      -- how much of a crash comes back as bounce
 	crashLoss    = 0.55,      -- and how much of the rest is simply eaten
@@ -104,6 +112,12 @@ local DEFAULTS = {
 }
 
 VehicleDefs.Defaults = DEFAULTS
+
+-- The mass a def's handling numbers are quoted against, and how quickly a car
+-- of that mass builds yaw rate (1/s). Everything heavier is slower to rotate
+-- and slower to stop rotating, in proportion.
+local REFERENCE_MASS = 1400
+local YAW_RESPONSE_AT_REFERENCE = 7
 
 -- Where the suspension sits when nothing is happening: half the travel, so a
 -- bump has somewhere to compress into and a crest has somewhere to drop into.
@@ -192,6 +206,19 @@ function VehicleDefs.Get(class)
 	def.dragQuad = math.max(def.drive - def.dragLinear * def.topSpeed, 0.01)
 		/ (def.topSpeed * def.topSpeed)
 
+	-- ROTATIONAL INERTIA, and the only thing mass is used for -- which is why
+	-- it is on the def at all rather than being decoration.
+	--
+	-- The bicycle model says what yaw rate the steering geometry is ASKING
+	-- for. A real car takes time to get there and time to stop again, and how
+	-- long depends on how heavy it is. Without this the car begins and ends
+	-- its rotation on the exact frame the wheels move, which is most of what
+	-- "the movements feel very intense" is.
+	--
+	-- Derived rather than authored so it cannot disagree with the mass beside
+	-- it: a van at 2600kg turns in at roughly half the rate of a 1400kg sedan.
+	def.yawResponse = YAW_RESPONSE_AT_REFERENCE * (REFERENCE_MASS / math.max(def.mass, 1))
+
 	-- Seats are the one nested table, so a class that overrides them must not
 	-- end up sharing DEFAULTS.seats by reference with everything else.
 	local seats = {}
@@ -237,6 +264,17 @@ end
 -- turned 180 degrees. A car built on the textbook version drives out of its
 -- own back bumper -- and steers into the key you did not press, because
 -- Roblox yaw also increases COUNTER-clockwise seen from above.
+
+-- A rotation of `degrees` to the RIGHT, in Roblox's convention.
+--
+-- Roblox yaw increases counter-clockwise seen from above, so turning right is
+-- a NEGATIVE rotation about Y. This is the third place that has had to know
+-- it -- the heading vector, the yaw rate, and now the front wheels, which
+-- were visibly steering the wrong way -- so it lives here rather than being
+-- rederived, correctly or otherwise, at each call site.
+function VehicleDefs.TurnCF(degrees)
+	return CFrame.Angles(0, -math.rad(degrees), 0)
+end
 
 function VehicleDefs.HeadingFromYaw(yaw)
 	return Vector3.new(-math.sin(yaw), 0, -math.cos(yaw))
@@ -322,6 +360,13 @@ end
 -- A wheel's radius from its size. Roblox cylinders lie along their own X, so
 -- the radius is on the other two axes; taking the larger of them also gives a
 -- sane answer for a ball, a block or an imported mesh.
+-- How far the wheel hangs below its strut top when the car is parked. The one
+-- number that relates "where the wheel is drawn" to "where the ray starts",
+-- and it is wanted in four places, so it is not written out four times.
+local function restDrop(def)
+	return def.suspension * (1 - VehicleDefs.RestCompression)
+end
+
 local function wheelRadiusOf(part)
 	return math.max(part.Size.Y, part.Size.Z) * 0.5
 end
@@ -410,10 +455,21 @@ local function gatherWheels(model, chassis, def)
 	for _, part in ipairs(container:GetDescendants()) do
 		if part:IsA("BasePart") and part ~= chassis then
 			local cf = localOffset(chassis, part)
+			-- WHERE YOU PUT THE WHEEL IS WHERE IT SITS AT REST. That is the
+			-- only reading a modeller would expect, and the previous one --
+			-- treating it as the top of the strut, with the wheel drawn half
+			-- a travel BELOW it -- is why cars floated above the road: a
+			-- model built with its wheels on the ground parked exactly
+			-- restDrop too high.
+			--
+			-- The strut top is derived from it instead, which is the same
+			-- geometry read the other way round.
+			local rest = cf.Position
 			table.insert(wheels, {
 				part = part,
 				name = part.Name,
-				offset = cf.Position,
+				rest = rest,
+				offset = rest + Vector3.new(0, restDrop(def), 0),
 				restRot = cf.Rotation,
 				radius = wheelRadiusOf(part),
 			})
@@ -424,8 +480,11 @@ local function gatherWheels(model, chassis, def)
 		-- No art. Fall back to the nominal layout so a def without a model
 		-- still has something to cast from.
 		for _, anchor in ipairs(VehicleDefs.WheelAnchors(def)) do
+			-- WheelAnchors returns strut tops, so the rest position is the
+			-- one derived here rather than the other way round.
 			table.insert(wheels, {
 				name = anchor.name,
+				rest = anchor.offset - Vector3.new(0, restDrop(def), 0),
 				offset = anchor.offset,
 				-- Standing a Roblox cylinder up: they lie along their own X.
 				restRot = CFrame.Angles(0, 0, math.rad(90)),
@@ -505,6 +564,7 @@ function VehicleDefs.NominalRig(def)
 	for _, anchor in ipairs(VehicleDefs.WheelAnchors(def)) do
 		table.insert(wheels, {
 			name = anchor.name,
+			rest = anchor.offset - Vector3.new(0, restDrop(def), 0),
 			offset = anchor.offset,
 			restRot = CFrame.Angles(0, 0, math.rad(90)),
 			radius = def.wheelRadius,
@@ -526,14 +586,28 @@ function VehicleDefs.NominalRig(def)
 	}
 end
 
--- Rest height from the RIG, so a model with big wheels parks on them rather
--- than on the numbers in a table.
+-- How high the chassis CENTRE sits when the car is parked, measured from the
+-- wheels themselves: the height at which the lowest wheel's bottom just
+-- touches the ground.
+--
+-- The old version added up the def's numbers -- a radius, half a suspension
+-- travel, half the chassis box -- which quietly assumed the wheels were at
+-- the bottom face of the chassis. They are wherever the model puts them, so
+-- for anything but the built-in car it was wrong, and the error showed up as
+-- a car resting with its wheels in the road or hovering above it.
 function VehicleDefs.RigRestHeight(rig)
-	local radius = 0
-	for _, wheel in ipairs(rig.wheels) do radius = math.max(radius, wheel.radius) end
-	return radius
-		+ rig.def.suspension * (1 - VehicleDefs.RestCompression)
-		+ rig.size.Y * 0.5
+	local needed = 0
+	for _, wheel in ipairs(rig.wheels) do
+		-- rest.Y is negative for a wheel below the chassis centre, so this is
+		-- how far the centre must be above the ground for THIS wheel to touch.
+		needed = math.max(needed, wheel.radius - wheel.rest.Y)
+	end
+	if needed <= 0 then
+		-- No wheels at all: fall back to the box, which at least keeps the
+		-- chassis out of the floor.
+		return rig.size.Y * 0.5
+	end
+	return needed
 end
 
 --=====================================================================

@@ -107,6 +107,26 @@ local function approach(current, target, rate, dt)
 	return current + (target - current) * (1 - math.exp(-rate * dt))
 end
 
+-- A damped harmonic oscillator, stepped once. Returns the new value and rate.
+--
+-- The difference from `approach` is the whole point and is not a nuance: an
+-- exponential approach is FIRST order and can only ever ease toward its target
+-- and stop. This is second order -- it carries a rate, so it arrives with
+-- momentum, goes past, and comes back. Under damping 1 it rings; at or above
+-- it, it does not.
+--
+-- Module level rather than a closure inside the step, so it can be exercised
+-- on its own. Through the sim the only observable is the angle against a
+-- target that is itself moving, and a first-order lag looks exactly like
+-- overshoot there -- which is how a lerp passed the first version of the test
+-- that was meant to catch it.
+local function dampedSpring(value, rate, target, hz, damping, dt)
+	local omega = 2 * math.pi * hz
+	local accel = (target - value) * omega * omega - rate * (2 * damping * omega)
+	rate += accel * dt
+	return value + rate * dt, rate
+end
+
 local function castParams(model)
 	local p = RaycastParams.new()
 	local ignore = { model }
@@ -654,7 +674,7 @@ local function step(s, dt)
 		-- negation the car steers into the key you did not press, which is
 		-- perfectly stable, perfectly smooth, and completely wrong.
 		local wheelbase = s.rig.wheelbase
-		local yawRate = -(roadSpeed / wheelbase) * math.tan(math.rad(s.steer))
+		local target = -(roadSpeed / wheelbase) * math.tan(math.rad(s.steer))
 
 		-- Understeer and oversteer are now separate things, because the two
 		-- ends of the car saturate separately.
@@ -669,13 +689,25 @@ local function step(s, dt)
 		local understeer = math.clamp(s.slipFront or 0, 0, 1.5)
 		local oversteer = math.clamp(s.slipRear or 0, 0, 1.5) * (1.5 - def.balance)
 
-		yawRate *= math.clamp(1 - understeer * 0.55 + oversteer * 0.8, 0.15, 2.5)
+		target *= math.clamp(1 - understeer * 0.55 + oversteer * 0.8, 0.15, 2.5)
 
-		s.yaw += yawRate * dt
-		s.yawRate = yawRate
+		-- APPROACHED, not assigned. Everything above computes the yaw rate the
+		-- geometry is asking for; def.yawResponse is how fast this particular
+		-- car can actually get there, and it comes from its mass. Assigning
+		-- the target directly is a car that starts and stops rotating on the
+		-- frame the wheels move, with no weight to it at all.
+		s.yawRate = approach(s.yawRate or 0, target, def.yawResponse, dt)
 	else
-		s.yawRate = approach(s.yawRate or 0, 0, 6, dt)
+		-- Off the ground or stopped: no new rotation is being generated, but
+		-- what the car already had bleeds off at the same rate rather than
+		-- vanishing. A car that stops mid-slide finishes its rotation.
+		s.yawRate = approach(s.yawRate or 0, 0, def.yawResponse, dt)
 	end
+
+	-- Integrated OUTSIDE the branch, so the tail of a rotation survives the
+	-- moment the car stops driving it. A car at rest has a yaw rate of zero
+	-- and so still does not tank-turn.
+	s.yaw += (s.yawRate or 0) * dt
 
 	--------------------------------------------------------------
 	-- 10. MOVE
@@ -715,10 +747,24 @@ local function step(s, dt)
 	-- most of what makes a car feel heavy.
 	local lateralG = accel:Dot(right)
 	local longG = accel:Dot(forward)
-	s.rollAngle = approach(s.rollAngle or 0, -lateralG * def.bodyRoll, 8, dt)
-	s.pitchAngle = approach(s.pitchAngle or 0, -longG * def.bodyPitch, 8, dt)
 
-	s.up = approach(s.up or targetUp, targetUp, 9, dt)
+	-- A SECOND-ORDER spring, not a lerp. The old first-order approach could
+	-- only ever ease toward the target and stop, which reads as a shell bolted
+	-- solid to the chassis; a spring overshoots and comes back, and that
+	-- overshoot is the whole of what "springy" means. Under-damped on purpose.
+	-- Published because they are what the spring is chasing, which is worth
+	-- having on the HUD when tuning the body.
+	s.rollTarget = -lateralG * def.bodyRoll
+	s.pitchTarget = -longG * def.bodyPitch
+
+	s.rollAngle, s.rollRate = dampedSpring(s.rollAngle or 0, s.rollRate or 0,
+		s.rollTarget, def.bodyHz, def.bodyDamp, dt)
+	s.pitchAngle, s.pitchRate = dampedSpring(s.pitchAngle or 0, s.pitchRate or 0,
+		s.pitchTarget, def.bodyHz, def.bodyDamp, dt)
+
+	-- Slower than it was: the shell should look like it is catching up with
+	-- the ground rather than welded to it.
+	s.up = approach(s.up or targetUp, targetUp, 6, dt)
 	if s.up.Magnitude < 1e-3 then s.up = Vector3.yAxis end
 	s.up = s.up.Unit
 
@@ -787,10 +833,12 @@ local function drawWheels(rig, cf, steer, spin, contacts)
 	for i, wheel in ipairs(rig.wheels) do
 		local part = wheel.part
 		if part and part.Parent then
-			-- Rest position by default, not full droop: an observed car has
-			-- no contacts to read, and hanging its wheels at the bottom of
-			-- the travel makes every other player's car look jacked up.
-			local drop = def.suspension * (1 - VehicleDefs.RestCompression)
+			-- Both distances are measured from the STRUT TOP, and the wheel is
+			-- drawn relative to its REST position -- so a car sitting still
+			-- puts its wheels exactly where the model put them, and travel is
+			-- a deviation from that rather than an offset baked into it.
+			local restDrop = def.suspension * (1 - VehicleDefs.RestCompression)
+			local drop = restDrop
 			local contact = contacts and contacts[i]
 			if contact then
 				drop = math.clamp(contact.distance - wheel.radius, 0, def.suspension)
@@ -798,7 +846,14 @@ local function drawWheels(rig, cf, steer, spin, contacts)
 
 			-- Steer about the CHASSIS up axis, before the wheel's own rotation.
 			-- Front axle only, which is what rig.front is for.
-			local steerRot = wheel.front and CFrame.Angles(0, math.rad(steer), 0) or CFrame.identity
+			--
+			-- TurnCF, not CFrame.Angles(0, rad(steer), 0). Positive steer is
+			-- the D key and means RIGHT; a positive rotation about Y in Roblox
+			-- is counter-clockwise, which is LEFT. So the front wheels pointed
+			-- the wrong way while the car turned correctly -- the same sign
+			-- trap as the heading vector and the yaw rate, which is why the
+			-- convention now lives in one helper.
+			local steerRot = wheel.front and VehicleDefs.TurnCF(steer) or CFrame.identity
 
 			-- restRot is the orientation the wheel was AUTHORED with, kept
 			-- rather than replaced. The first version forced a quarter turn about
@@ -811,7 +866,7 @@ local function drawWheels(rig, cf, steer, spin, contacts)
 			-- about the wrong one; that is the one thing here that art has to match
 			-- rather than declare.
 			part.CFrame = cf
-				* CFrame.new(wheel.offset - Vector3.new(0, drop, 0))
+				* CFrame.new(wheel.rest - Vector3.new(0, drop - restDrop, 0))
 				* steerRot
 				* wheel.restRot
 				* CFrame.Angles(spin, 0, 0)
