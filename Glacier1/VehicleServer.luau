@@ -470,7 +470,10 @@ local function settleStep(model, entry, dt)
 	local chassis = rig and rig.chassis
 	if not chassis or not chassis.Parent then return end
 
-	local gravity = Config.Get("sv_vehicle_gravity") or 196
+	-- Same rule as the driving sim: 0 means follow sv_gravity, so a parked
+	-- car falls at the rate everything else does.
+	local gravity = Config.Get("sv_vehicle_gravity") or 0
+	if gravity <= 0 then gravity = Config.Get("sv_gravity") or 72.7 end
 	local gap, normal = groundGap(model, rig)
 
 	if gap == nil then

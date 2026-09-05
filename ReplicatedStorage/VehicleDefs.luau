@@ -284,6 +284,23 @@ function VehicleDefs.TurnCF(degrees)
 	return CFrame.Angles(0, -math.rad(degrees), 0)
 end
 
+-- How far BELOW its rest position a wheel hangs, given what its suspension ray
+-- found. Positive is down -- the wheel reaching into a dip -- and negative is
+-- up, the wheel pushed into the arch by a bump. Bounded by the travel either
+-- way, so a wheel over a cliff hangs at full droop rather than stretching to
+-- the valley floor.
+--
+-- Extracted because it is the whole of what independent suspension LOOKS
+-- like, and a number that only exists inside a draw call cannot be tested.
+function VehicleDefs.WheelOffset(def, wheel, contact)
+	if not contact then return 0 end
+
+	local restDrop = def.suspension * (1 - VehicleDefs.RestCompression)
+	local ground = wheel.ground or wheel.radius
+	local drop = math.clamp(contact.distance - ground, 0, def.suspension)
+	return drop - restDrop
+end
+
 function VehicleDefs.HeadingFromYaw(yaw)
 	return Vector3.new(-math.sin(yaw), 0, -math.cos(yaw))
 end

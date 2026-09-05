@@ -745,7 +745,15 @@ Define("sv_vehicle_exitclear", 4.5, FCVAR.REPLICATED)  -- how far to the side yo
 -- VehicleDefs and reloading. 1 is the class's own number.
 Define("sv_vehicle_powerscale", 1, FCVAR.REPLICATED + FCVAR.CHEAT)
 Define("sv_vehicle_gripscale", 1, FCVAR.REPLICATED + FCVAR.CHEAT)
-Define("sv_vehicle_gravity", 196, FCVAR.REPLICATED + FCVAR.CHEAT)
+-- 0 means "whatever sv_gravity is", which is what it should almost always be.
+--
+-- This was 196 -- nearly three times the 72.7 the rest of the engine falls at
+-- -- for no reason anyone wrote down. A car cannot climb a slope steeper than
+-- its drive divided by its gravity, so at 196 a sedan making 26 studs/s^2
+-- could not get up a 15-degree ramp: gravity was pulling it back down that
+-- slope at 50.7. It also meant cars fell out of a jump nearly three times
+-- harder than the player standing next to them.
+Define("sv_vehicle_gravity", 0, FCVAR.REPLICATED + FCVAR.CHEAT)
 
 -- The speed the sim is allowed to leave a step at, whatever the maths says.
 -- Same role as sv_maxvelocity for a player: a guard against one bad frame

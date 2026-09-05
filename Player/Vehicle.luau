@@ -188,6 +188,11 @@ local function probeSuspension(s)
 	local grounded = 0
 	local deepest = 0
 
+	-- How far the strut top has gone BELOW where the fully compressed wheel
+	-- would put it. Zero in normal driving; positive means the suspension has
+	-- run out of travel and the chassis is inside the road.
+	local penetration = 0
+
 	for i, wheel in ipairs(wheels) do
 		-- Per-wheel radius, measured off the part. A model with 1.4-stud
 		-- wheels must not be simulated as though it had 1.1-stud ones, and
@@ -211,6 +216,10 @@ local function probeSuspension(s)
 				anchor = wheel.offset,
 				distance = hit.Distance,
 			}
+			-- Measured BEFORE the clamp above throws it away. This is what
+			-- the bump stop needs, and clamping compression to 1 hides it.
+			penetration = math.max(penetration, ground - hit.Distance)
+
 			normalSum += hit.Normal
 			grounded += 1
 			if compression > deepest then deepest = compression end
@@ -222,7 +231,7 @@ local function probeSuspension(s)
 	local normal = (grounded > 0 and normalSum.Magnitude > 1e-3)
 		and normalSum.Unit or Vector3.yAxis
 
-	return contacts, normal, grounded / math.max(#wheels, 1), deepest
+	return contacts, normal, grounded / math.max(#wheels, 1), deepest, penetration
 end
 
 --=====================================================================
@@ -345,7 +354,12 @@ local function depenetrate(s, cf)
 		for _, part in ipairs(candidates) do
 			if part.CanCollide then
 				local mtv, depth = separateOBB(cf, half, part)
-				if mtv and depth > DEPEN_EPS and depth > deepest then
+				-- Upward pushes are the GROUND, and the ground is the
+				-- suspension's job for the same reason as the sweep above.
+				-- Shoving the chassis up out of a ramp it is resting on
+				-- fights the springs and launches the car off crests.
+				local fromGround = mtv and mtv.Unit.Y >= MIN_RESTING_NORMAL_Y
+				if mtv and not fromGround and depth > DEPEN_EPS and depth > deepest then
 					push, deepest = mtv, depth
 				end
 			end
@@ -389,6 +403,26 @@ local function moveChassis(s, cf, displacement)
 		local hit = workspace:Blockcast(cf, s.rig.size - SKIN_SIZE, remaining, s.params)
 
 		if not hit then
+			cf = cf + remaining
+			break
+		end
+
+		-- DRIVABLE SURFACES ARE NOT THE BOX'S PROBLEM.
+		--
+		-- The suspension carries the car over the ground; the box exists to
+		-- stop it going through things it cannot drive over. Colliding the
+		-- box with the ground as well means the two fight: a car climbing a
+		-- ramp catches its leading bottom edge on the ramp surface and the
+		-- sweep takes the speed away, which is "ramps slow the car
+		-- massively". The same hit on the way down turns a landing into a
+		-- bounce off the restitution, which is "leaping over an edge is
+		-- weird".
+		--
+		-- Anything too steep for the suspension to hold is still a wall and
+		-- still stops the car -- that is what the threshold is for.
+		if hit.Normal.Y >= MIN_RESTING_NORMAL_Y then
+			-- Step past it and carry on. The suspension will lift the car
+			-- over it on the same tick.
 			cf = cf + remaining
 			break
 		end
@@ -444,7 +478,11 @@ local function step(s, dt)
 		s.paramsPuppet = State.playerPuppet
 	end
 
-	local gravity = num(Config.sv_vehicle_gravity, 196)
+	-- Cars fall at the same rate as everything else unless told otherwise.
+	-- sv_vehicle_gravity 0 means "follow sv_gravity"; a positive value
+	-- overrides it, which is the knob rather than the default.
+	local gravity = num(Config.sv_vehicle_gravity, 0)
+	if gravity <= 0 then gravity = num(Config.sv_gravity, 72.7) end
 	local powerScale = num(Config.sv_vehicle_powerscale, 1)
 	local gripScale = num(Config.sv_vehicle_gripscale, 1)
 
@@ -468,7 +506,37 @@ local function step(s, dt)
 	--------------------------------------------------------------
 	-- 2. SUSPENSION
 	--------------------------------------------------------------
-	local contacts, groundNormal, groundFrac, deepest = probeSuspension(s)
+	local contacts, groundNormal, groundFrac, deepest, penetration = probeSuspension(s)
+
+	--------------------------------------------------------------
+	-- 2b. BUMP STOP
+	--------------------------------------------------------------
+	-- The suspension has a limit, and past it the wheel cannot go any further
+	-- into the arch -- so the CHASSIS has to stop instead. Without this there
+	-- is nothing at all holding the car up once the springs bottom out: the
+	-- spring force saturates at full compression, and anything that pushes
+	-- harder than that simply drives the car down through the road.
+	--
+	-- It used to be masked. The chassis box collided with the ground too, so
+	-- bottoming out was caught by the sweep -- badly, by taking all the speed
+	-- away, which is what made ramps feel like driving into treacle. Handing
+	-- drivable surfaces to the suspension means the suspension has to own this
+	-- end of the travel as well.
+	--
+	-- The state it prevented was not a slow sink but a coin flip: a car
+	-- bottoming out at speed either recovered or punched through and fell for
+	-- ever, decided by float noise. Two runs from what looked like identical
+	-- state went different ways, which is how this was found.
+	if penetration > 0 then
+		local lift = (groundFrac > 0) and groundNormal or Vector3.yAxis
+		s.cf = s.cf + lift * penetration
+
+		-- And the speed that was driving it in, or the next step puts it
+		-- straight back and the car hammers along the bump stop.
+		local into = s.vel:Dot(lift)
+		if into < 0 then s.vel -= lift * into end
+		s.bumpStops = (s.bumpStops or 0) + 1
+	end
 	local grounded = groundFrac > 0.01
 	s.groundFrac = groundFrac
 	s.groundNormal = groundNormal
@@ -892,16 +960,10 @@ local function drawWheels(rig, cf, steer, spin, contacts)
 	for i, wheel in ipairs(rig.wheels) do
 		local part = wheel.part
 		if part and part.Parent then
-			-- Both distances are measured from the STRUT TOP, and the wheel is
-			-- drawn relative to its REST position -- so a car sitting still
-			-- puts its wheels exactly where the model put them, and travel is
-			-- a deviation from that rather than an offset baked into it.
-			local restDrop = def.suspension * (1 - VehicleDefs.RestCompression)
-			local drop = restDrop
-			local contact = contacts and contacts[i]
-			if contact then
-				drop = math.clamp(contact.distance - (wheel.ground or wheel.radius), 0, def.suspension)
-			end
+			-- Drawn relative to its REST position, so a car sitting still puts
+			-- its wheels exactly where the model put them and travel is a
+			-- deviation from that rather than an offset baked into it.
+			local travel = VehicleDefs.WheelOffset(def, wheel, contacts and contacts[i])
 
 			-- Steer about the CHASSIS up axis, before the wheel's own rotation.
 			-- Front axle only, which is what rig.front is for.
@@ -925,7 +987,7 @@ local function drawWheels(rig, cf, steer, spin, contacts)
 			-- about the wrong one; that is the one thing here that art has to match
 			-- rather than declare.
 			part.CFrame = cf
-				* CFrame.new(wheel.rest - Vector3.new(0, drop - restDrop, 0))
+				* CFrame.new(wheel.rest - Vector3.new(0, travel, 0))
 				* steerRot
 				* wheel.restRot
 				* CFrame.Angles(spin, 0, 0)
@@ -1011,7 +1073,8 @@ local function startDriving(model, def, index)
 		rig = rig,
 		cf = chassis.CFrame,
 		renderCf = chassis.CFrame,
-		prevCf = chassis.CFrame,
+		prevRenderCf = chassis.CFrame,
+		prevPhysicsCf = chassis.CFrame,
 		vel = Vector3.zero,
 		yaw = yaw,
 		yawRate = 0,
@@ -1248,6 +1311,8 @@ local function pushObserved(packet)
 		cf = packet.cf,
 		steer = num(packet.steer, 0),
 		spin = num(packet.wheelSpin, 0),
+		roll = num(packet.roll, 0),
+		pitch = num(packet.pitch, 0),
 	}
 
 	-- Inserted in time order: a packet delayed in flight carries an OLD pose,
@@ -1287,18 +1352,28 @@ local function drawObserved()
 			if a then
 				local cf = a.cf
 				local steer, spin = a.steer, a.spin
+				local roll, pitch = a.roll, a.pitch
 				if b and b.t > a.t then
 					local alpha = math.clamp((renderAt - a.t) / (b.t - a.t), 0, 1)
 					cf = a.cf:Lerp(b.cf, alpha)
 					steer = a.steer + (b.steer - a.steer) * alpha
 					spin = a.spin + (b.spin - a.spin) * alpha
+					roll = a.roll + (b.roll - a.roll) * alpha
+					pitch = a.pitch + (b.pitch - a.pitch) * alpha
 				end
 
 				model:PivotTo(cf)
 				-- Re-measured if the rig went stale, which happens when the
 				-- model was still streaming in when the first packet landed.
 				entry.rig = entry.rig or VehicleDefs.Rig(model, entry.def)
-				drawWheels(entry.rig, cf, steer, spin, nil)
+
+				-- The lean undone, to recover the physics frame the wheels
+				-- belong in. The sender's frame is the physics one with these
+				-- two angles applied, so applying their negatives takes it
+				-- back -- and someone else's car then has its wheels flat on
+				-- the road exactly like your own.
+				local flat = cf * CFrame.Angles(math.rad(-pitch), 0, math.rad(-roll))
+				drawWheels(entry.rig, flat, steer, spin, nil)
 			end
 		end
 	end
@@ -1342,9 +1417,10 @@ function Vehicle.Update(deltaTime)
 			fixedDelta * num(Config.sv_MaxCatchupSteps, 8))
 
 		while accumulator >= fixedDelta do
-			-- The RENDER frame is what gets interpolated, so the body lean is
-			-- smooth between steps too rather than snapping on each one.
-			sim.prevCf = sim.renderCf or sim.cf
+			-- BOTH frames are carried, because the body and the wheels are
+			-- drawn from different ones -- see below.
+			sim.prevRenderCf = sim.renderCf or sim.cf
+			sim.prevPhysicsCf = sim.cf
 			step(sim, fixedDelta)
 			accumulator -= fixedDelta
 		end
@@ -1354,10 +1430,22 @@ function Vehicle.Update(deltaTime)
 		-- without this the difference reads as stutter at any frame rate that
 		-- is not an exact multiple of the tick.
 		local alpha = math.clamp(accumulator / fixedDelta, 0, 1)
-		local renderCf = sim.prevCf:Lerp(sim.renderCf or sim.cf, alpha)
+		local renderCf = (sim.prevRenderCf or sim.cf):Lerp(sim.renderCf or sim.cf, alpha)
+		local physicsCf = (sim.prevPhysicsCf or sim.cf):Lerp(sim.cf, alpha)
 
+		-- The BODY gets the render frame, which leans.
 		seatModel:PivotTo(renderCf)
-		drawWheels(rig, renderCf, sim.steer, sim.wheelSpin, sim.contacts)
+
+		-- The WHEELS get the physics frame, which does not.
+		--
+		-- PivotTo has just moved them along with everything else, so this
+		-- overrides them, and the order matters. Drawing the wheels in the
+		-- render frame tilts them with the body, which is a car milled from a
+		-- single block: the whole point of independent suspension is that the
+		-- body leans and the wheels stay flat on the road. That is what "the
+		-- wheels look stuck onto the chassis" was -- the travel was working
+		-- the whole time, but every wheel was leaning with the shell.
+		drawWheels(rig, physicsCf, sim.steer, sim.wheelSpin, sim.contacts)
 
 		State.vehicleSpeed = math.abs(sim.roadSpeed or 0)
 		State.vehicleSlip = sim.slip or 0
@@ -1385,6 +1473,12 @@ function Vehicle.Sync()
 		-- What it LOOKS like, so other clients see the same lean the driver
 		-- does. The server only reads the position out of this.
 		cf = sim.renderCf or sim.cf,
+		-- The body lean, so the receiver can recover the PHYSICS frame and
+		-- draw the wheels flat on the road. Two numbers is cheaper than a
+		-- second CFrame and exact, since the render frame is just the
+		-- physics one with these applied.
+		roll = sim.rollAngle,
+		pitch = sim.pitchAngle,
 		vel = sim.vel,
 		steer = sim.steer,
 		wheelSpin = sim.wheelSpin,
