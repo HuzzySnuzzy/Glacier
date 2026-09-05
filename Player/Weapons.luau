@@ -295,6 +295,9 @@ local function serviceInventoryRequests()
 	end
 
 	if State.useRequested then
+		-- Vehicle.Update runs earlier in the frame and clears this when there
+		-- was a car in range, so a press that survives to here is genuinely
+		-- "pick that up".
 		State.useRequested = false
 		local pickup = remote("PickupWeapon")
 		if pickup then pickup:FireServer() end

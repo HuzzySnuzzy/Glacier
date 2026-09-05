@@ -15,6 +15,7 @@ local Input = require(script.Input)
 local Math = require(script.MovementMath)
 local Character = require(script.Character)
 local Physics = require(script.Physics)
+local Vehicle = require(script.Vehicle)
 local Visuals = require(script.Visuals)
 local Debug = require(script.Debug)
 local Sounds = require(script.Sounds)
@@ -39,6 +40,7 @@ Bullets.Init()
 Spectate.Init()
 SoundReceiver.Init()
 ServerDebug.Init()
+Vehicle.Init()
 --=====================================================================
 -- Lifecycle helpers (shared by loadhere / unload)
 --=====================================================================
@@ -296,6 +298,24 @@ RunService.RenderStepped:Connect(function(deltaTime)
 	-- current as of this frame.
 	Input.UpdateMouse()
 	Input.UpdateWishDir()
+
+	-- Vehicle first, and it returns whether it has taken over. Driving and
+	-- walking both write the RawBody and both write the camera, so exactly one
+	-- of them may run per frame -- running both is the fight, not the fix.
+	-- It is called unconditionally because it also draws every car OTHER
+	-- people are driving, which has to happen whether we are seated or not.
+	if Vehicle.Update(sdt) then
+		-- Weapons deliberately does NOT run while seated. Its update owns the
+		-- viewmodel, the muzzle and the recoil punch, and all three are drawn
+		-- by Visuals, which is skipped here -- so letting it fire would leave
+		-- the effects frozen wherever they were when you got in. Drive-by
+		-- shooting is a real feature and this is where it would go; it needs
+		-- a seated viewmodel pass first, not just this call back.
+		Debug.Update(deltaTime)
+		Sounds.Update(sdt)
+		return
+	end
+
 	Physics.Update(sdt)
 
 	Character.UpdateVisibility()
@@ -310,6 +330,11 @@ end)
 -- Server Sync
 local lastWeaponName = nil
 RunService.Heartbeat:Connect(function()
+	-- The car we are driving, if any. On Heartbeat rather than per frame for
+	-- the same reason PuppetSync is: the server relays it to other clients,
+	-- and there is no point sending faster than they can draw.
+	Vehicle.Sync()
+
 	if State.playerPuppet and State.playerPuppet.PrimaryPart then
 		
 		if State.currentWeaponStats then

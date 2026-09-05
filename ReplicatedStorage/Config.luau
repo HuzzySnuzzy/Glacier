@@ -704,6 +704,51 @@ Define("sv_falldamage_scale", 1, FCVAR.REPLICATED)     -- multiplier over the wh
 
 
 --=====================================================================
+-- VEHICLES
+--=====================================================================
+-- The per-class handling numbers live in VehicleDefs, not here: there are
+-- twenty of them per class and putting each one behind a cvar would be a
+-- hundred names nobody will ever type. These are the GLOBAL knobs -- the ones
+-- that apply to every car at once, or that decide whether the system does
+-- anything at all.
+--
+-- REPLICATED throughout for the same reason movement is: the driver's client
+-- simulates the car and the server range-checks the result, so both ends have
+-- to be reading the same numbers.
+
+Define("sv_vehicles", true, FCVAR.REPLICATED)          -- master switch
+Define("sv_vehicle_maxcount", 24, FCVAR.REPLICATED)    -- spawned at once, server-wide
+Define("sv_vehicle_userange", 12, FCVAR.REPLICATED)    -- studs; how close +use has to be
+Define("sv_vehicle_exitclear", 4.5, FCVAR.REPLICATED)  -- how far to the side you step out
+
+-- Multipliers over every class at once, for tuning by feel without editing
+-- VehicleDefs and reloading. 1 is the class's own number.
+Define("sv_vehicle_powerscale", 1, FCVAR.REPLICATED + FCVAR.CHEAT)
+Define("sv_vehicle_gripscale", 1, FCVAR.REPLICATED + FCVAR.CHEAT)
+Define("sv_vehicle_gravity", 196, FCVAR.REPLICATED + FCVAR.CHEAT)
+
+-- The speed the sim is allowed to leave a step at, whatever the maths says.
+-- Same role as sv_maxvelocity for a player: a guard against one bad frame
+-- turning into a car in orbit.
+Define("sv_vehicle_maxvelocity", 400, FCVAR.REPLICATED + FCVAR.CHEAT)
+
+-- How hard the car shoves a player it runs into, and how much that hurts.
+-- 0 damage means cars are pure bumper-cars, which is the safer default until
+-- you have decided what a road death should cost.
+Define("sv_vehicle_pushforce", 1.15, FCVAR.REPLICATED)
+Define("sv_vehicle_ramdamage", 0, FCVAR.REPLICATED)
+
+-- CLIENT-side feel. The camera is the driver's own, so it never leaves this VM.
+Define("cl_vehicle_camdist", 17, FCVAR.CLIENT)
+Define("cl_vehicle_camheight", 5.2, FCVAR.CLIENT)
+Define("cl_vehicle_campitch", -11, FCVAR.CLIENT)   -- degrees, negative looks down
+Define("cl_vehicle_camlag", 7, FCVAR.CLIENT)       -- higher is stiffer; 0 pins it rigid
+Define("cl_vehicle_camfovgain", 14, FCVAR.CLIENT)  -- extra FOV at top speed
+Define("cl_vehicle_freelook", true, FCVAR.CLIENT)  -- mouse orbits instead of steering the camera
+Define("cl_vehicle_debug", false, FCVAR.CLIENT)    -- draw suspension rays and force vectors
+
+
+--=====================================================================
 -- CONSOLE / SETTER
 --=====================================================================
 

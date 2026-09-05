@@ -40,6 +40,15 @@ return {
 	stuckTicks = 0,
 	dbgWishCalls = 0,
 	forwardMoveAxis = 0,   -- -1 (S), 0, or 1 (W)
+	sideMoveAxis    = 0,   -- -1 (A), 0, or 1 (D); raw, for vehicle steering
+
+	-- Vehicles. inVehicle gates the whole player sim: when it is true, Physics
+	-- does not run and Vehicle owns the RawBody and the camera.
+	inVehicle       = false,
+	vehicleSeat     = nil,
+	vehicleSpeed    = 0,
+	vehicleSlip     = 0,
+	vehicleGrounded = false,
 	-- Ladder
 	onLadder = false,
 	ladderNormal = Vector3.zAxis,

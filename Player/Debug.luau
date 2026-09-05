@@ -621,7 +621,31 @@ function Debug.Update(deltaTime)
 	if showHud then updatePlayerPanel() end
 
 	-- ---- speedometer + stats ----
-	if showHud and body then
+	if showHud and State.inVehicle and body then
+		-- While driving, State.velocity is ZERO by design: Vehicle parks the
+		-- RawBody at the seat and zeroes it so stepping out does not fling
+		-- you across the map. So the speedometer has to read the CAR, or it
+		-- sits at 0 for the entire time the number matters most.
+		local carSpeed = num(State.vehicleSpeed)
+		speedLabel.Text = string.format("%.0f", carSpeed)
+		speedLabel.TextColor3 = (State.vehicleSlip or 0) > 0.15 and PALETTE.warn
+			or (State.vehicleGrounded and PALETTE.cool or PALETTE.dim)
+
+		statsLabel.Text = table.concat({
+			paint(("DRIVING  seat %d"):format(State.vehicleSeat or 0), PALETTE.cool),
+			"",
+			sysBlock(),
+			"",
+			row("fps", v("%6.1f", displayFps)),
+			row("speed", v("%6.1f", carSpeed),
+				dim("   studs/s")),
+			row("slip", vc((State.vehicleSlip or 0) > 0.15 and PALETTE.warn or PALETTE.value,
+				"%6.2f", num(State.vehicleSlip)),
+				dim("   wheels down "), flag(State.vehicleGrounded)),
+			row("pos", v("%s", fmtVec(body.Position))),
+		}, "\n")
+
+	elseif showHud and body then
 		speedLabel.Text = string.format("%.0f", speed)
 		-- Coloured by how fast rather than by grounded: the interesting thing
 		-- about a number on a speedometer is the number.

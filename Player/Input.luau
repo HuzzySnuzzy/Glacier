@@ -1019,6 +1019,7 @@ function Input.UpdateWishDir()
 		-- Was omitted on the frozen path, so a freezetime jump fed ABH the
 		-- last held direction.
 		State.forwardMoveAxis = 0
+		State.sideMoveAxis = 0
 		return
 	end
 
@@ -1031,6 +1032,12 @@ function Input.UpdateWishDir()
 	-- The signed forward axis survives separately: wishDir is normalised and
 	-- rotated, so ABH can't recover the sign from it.
 	State.forwardMoveAxis = fwd
+
+	-- And the side axis, for the same reason plus one more: a car steers with
+	-- the WHEELS, so it needs A and D raw. Deriving them back out of wishDir
+	-- would mean the camera decides which way the front wheels point, and
+	-- looking out of the side window would turn the car.
+	State.sideMoveAxis = side
 
 	local inputVector = Vector3.new(side, 0, -fwd)
 	if inputVector.Magnitude > 0 then
