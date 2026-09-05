@@ -128,7 +128,27 @@ local function castParams(model)
 
 	p.FilterDescendantsInstances = ignore
 	p.FilterType = Enum.RaycastFilterType.Exclude
+
+	-- Same reason as Physics: a Roblox cast hits a part whether or not it
+	-- collides, so without this a car is stopped by every non-collidable
+	-- decoration -- and by its OWN wheels and seats, which are deliberately
+	-- CanCollide false. pcall'd because assigning an unknown property errors.
+	pcall(function() p.RespectCanCollide = true end)
 	return p
+end
+
+-- The same ignore set for the overlap query the depenetration pass runs. It
+-- has to be a separate object: OverlapParams and RaycastParams are different
+-- types and GetPartBoundsInBox will not take the latter.
+local function castOverlapParams(model)
+	local op = OverlapParams.new()
+	op.FilterDescendantsInstances = castParams(model).FilterDescendantsInstances
+	op.FilterType = Enum.RaycastFilterType.Exclude
+	-- Bounded: a car in a dense scene can overlap a lot of bounding boxes, and
+	-- the narrow phase below only cares about the deepest contact anyway.
+	op.MaxParts = 24
+	pcall(function() op.RespectCanCollide = true end)
+	return op
 end
 
 --=====================================================================
@@ -196,8 +216,138 @@ local MAX_BUMPS = 3
 local SKIN = 0.05
 local SKIN_SIZE = Vector3.new(SKIN * 2, SKIN * 2, SKIN * 2)
 
-local function moveChassis(s, displacement, dt)
-	local pos = s.cf.Position
+--=====================================================================
+-- DEPENETRATION
+--=====================================================================
+-- Separating Axis Test, box against box, both rotated.
+--
+-- Physics has one of these already, but its box A is AXIS-ALIGNED -- a player
+-- hull never rotates -- so it tests 3 + 3 axes and cannot be reused for a car.
+-- A car is an OBB, and OBB against OBB needs all 15: three faces each, plus
+-- the nine edge-edge cross products. Skipping the cross products is the
+-- classic shortcut and it fails exactly on edge-on-edge contact, which is
+-- what hitting a wall at an angle IS.
+--
+-- WHY THIS IS NEEDED AT ALL, given the sweep: because the sweep does not
+-- cover rotation. Yaw is integrated and the CFrame rebuilt with no collision
+-- test, so a car can turn its own corner into a wall without ever translating
+-- into it. And once the box overlaps ANYTHING, Roblox shapecasts -- which
+-- ignore the geometry they start inside, exactly as raycasts do -- return nil
+-- from then on. The car stops colliding with the world entirely and drives
+-- through everything, permanently. That is the reported bug, and no amount of
+-- tuning the sweep fixes it: something has to push the box back out.
+
+local function boxAxes(cf)
+	return cf.RightVector, cf.UpVector, cf.LookVector
+end
+
+-- Returns the minimum translation vector that separates A from B, or nil when
+-- they are already apart. The vector points the way A has to move.
+local function separateOBB(cfA, halfA, part)
+	local cfB = part.CFrame
+	local ax, ay, az = boxAxes(cfA)
+	local bx, by, bz = boxAxes(cfB)
+	local halfB = part.Size * 0.5
+	local delta = cfB.Position - cfA.Position
+
+	local bestAxis, bestDepth = nil, math.huge
+
+	local function test(axis)
+		local lenSq = axis:Dot(axis)
+		if lenSq < 1e-12 then return true end   -- degenerate: parallel edges
+		axis = axis / math.sqrt(lenSq)
+
+		local rA = math.abs(ax:Dot(axis)) * halfA.X
+			+ math.abs(ay:Dot(axis)) * halfA.Y
+			+ math.abs(az:Dot(axis)) * halfA.Z
+		local rB = math.abs(bx:Dot(axis)) * halfB.X
+			+ math.abs(by:Dot(axis)) * halfB.Y
+			+ math.abs(bz:Dot(axis)) * halfB.Z
+
+		local dist = delta:Dot(axis)
+		local overlap = rA + rB - math.abs(dist)
+		if overlap <= 0 then return false end   -- separating axis: done
+
+		if overlap < bestDepth then
+			bestDepth = overlap
+			bestAxis = (dist > 0) and -axis or axis
+		end
+		return true
+	end
+
+	-- Six face normals.
+	if not test(ax) then return nil end
+	if not test(ay) then return nil end
+	if not test(az) then return nil end
+	if not test(bx) then return nil end
+	if not test(by) then return nil end
+	if not test(bz) then return nil end
+
+	-- Nine edge pairs. These are the ones that catch a corner on a corner.
+	for _, a in ipairs({ ax, ay, az }) do
+		for _, b in ipairs({ bx, by, bz }) do
+			if not test(a:Cross(b)) then return nil end
+		end
+	end
+
+	if not bestAxis then return nil end
+	return bestAxis * bestDepth, bestDepth
+end
+
+-- Pushes the chassis out of anything it is inside, and returns the total push
+-- so the caller can kill the velocity component that drove it in.
+--
+-- Iterated, because resolving one overlap can create another -- a car wedged
+-- in a corner has to come out along both faces -- but bounded, because two
+-- walls closing on a car have no solution and the alternative is a hang.
+local MAX_DEPEN_PASSES = 4
+local DEPEN_EPS = 0.01
+
+local function depenetrate(s, cf)
+	local half = s.rig.size * 0.5
+	local total = Vector3.zero
+
+	for _ = 1, MAX_DEPEN_PASSES do
+		-- Generously sized: a rotated part's bounding box is much larger than
+		-- the part, so the broad phase has to over-collect or it will miss
+		-- contacts the narrow phase would have found.
+		local candidates = workspace:GetPartBoundsInBox(cf, s.rig.size * 1.5, s.overlapParams)
+
+		local push, deepest = Vector3.zero, 0
+		for _, part in ipairs(candidates) do
+			if part.CanCollide then
+				local mtv, depth = separateOBB(cf, half, part)
+				if mtv and depth > DEPEN_EPS and depth > deepest then
+					push, deepest = mtv, depth
+				end
+			end
+		end
+
+		if deepest <= DEPEN_EPS then break end
+
+		-- A little past touching, so the next sweep starts OUTSIDE. Landing
+		-- exactly on the surface leaves the shapecast overlapping by a float
+		-- error, which is the whole failure this exists to prevent.
+		local step = push.Unit * (deepest + SKIN)
+		cf = cf + step
+		total += step
+	end
+
+	return cf, total
+end
+
+--=====================================================================
+-- COLLISION
+--=====================================================================
+-- The chassis box, swept. Deliberately much simpler than the player's
+-- MoveAndSlide: a car that slides along a wall for four bumps reads as a car
+-- that is stuck, where a car that scrapes and loses speed reads as a car that
+-- hit something. A few bumps, restitution, and a chunk of the speed eaten.
+--
+-- Takes and returns a CFRAME rather than a position, because the sweep has to
+-- be done with the car's real orientation and the depenetration pass wants to
+-- hand its result straight back in.
+local function moveChassis(s, cf, displacement)
 	local remaining = displacement
 	local vel = s.vel
 	local hitAnything = nil
@@ -208,11 +358,10 @@ local function moveChassis(s, displacement, dt)
 		-- Shrunk by the skin for the same reason the player hull is: a cast
 		-- box exactly the size of the collision box starts the sweep already
 		-- touching whatever it is resting against.
-		local hit = workspace:Blockcast(
-			CFrame.new(pos) * s.cf.Rotation, s.rig.size - SKIN_SIZE, remaining, s.params)
+		local hit = workspace:Blockcast(cf, s.rig.size - SKIN_SIZE, remaining, s.params)
 
 		if not hit then
-			pos += remaining
+			cf = cf + remaining
 			break
 		end
 
@@ -220,7 +369,7 @@ local function moveChassis(s, displacement, dt)
 
 		local travelled = math.max(hit.Distance - SKIN, 0)
 		local direction = remaining.Unit
-		pos += direction * travelled
+		cf = cf + direction * travelled
 		remaining -= direction * travelled
 
 		-- Split the impact into the part going INTO the surface and the part
@@ -246,7 +395,7 @@ local function moveChassis(s, displacement, dt)
 	end
 
 	s.vel = vel
-	return pos, hitAnything
+	return cf, hitAnything
 end
 
 --=====================================================================
@@ -262,6 +411,7 @@ local function step(s, dt)
 	-- step is an allocation per step, and this runs at sv_PhysicsHz.
 	if s.paramsBody ~= State.playerBody or s.paramsPuppet ~= State.playerPuppet then
 		s.params = castParams(s.model)
+		s.overlapParams = castOverlapParams(s.model)
 		s.paramsBody = State.playerBody
 		s.paramsPuppet = State.playerPuppet
 	end
@@ -473,7 +623,30 @@ local function step(s, dt)
 	--------------------------------------------------------------
 	-- 10. MOVE
 	--------------------------------------------------------------
-	local pos, hit = moveChassis(s, vel * dt, dt)
+	-- Swept from the car's CURRENT orientation, then re-oriented, then pushed
+	-- out of anything the rotation put it inside. That order matters: the
+	-- sweep can only see translation, so rotation is the one way into
+	-- geometry that nothing else catches.
+	local moveCF = CFrame.new(s.cf.Position) * s.cf.Rotation
+	local displacement = vel * dt
+
+	-- SUBSTEPPED when a single step would move the car more than half its own
+	-- smallest dimension. A shapecast cannot tunnel, but a car that covers
+	-- three studs in one step resolves a corner impact from three studs away
+	-- and skates around it; splitting keeps each resolution local. At 60Hz
+	-- and 95 studs/s this is two substeps, and at 240Hz it is none.
+	local shortest = math.min(s.rig.size.X, s.rig.size.Y, s.rig.size.Z)
+	local substeps = math.clamp(
+		math.ceil(displacement.Magnitude / math.max(shortest * 0.5, 0.1)), 1, 8)
+
+	local hit
+	for _ = 1, substeps do
+		local stepped
+		moveCF, stepped = moveChassis(s, moveCF, s.vel * (dt / substeps))
+		hit = hit or stepped
+	end
+
+	local pos = moveCF.Position
 
 	--------------------------------------------------------------
 	-- 11. ORIENTATION  (drawn, per the header)
@@ -509,6 +682,30 @@ local function step(s, dt)
 	-- one place for a sign that has already been wrong once.
 	s.cf = VehicleDefs.OrientCF(pos, s.yaw, s.up)
 		* CFrame.Angles(math.rad(s.pitchAngle), 0, math.rad(s.rollAngle))
+
+	--------------------------------------------------------------
+	-- 11b. DEPENETRATION
+	--------------------------------------------------------------
+	-- After the orientation, because the orientation is what puts the car
+	-- inside things. The sweep never sees a rotation, so a car turning beside
+	-- a wall drives its own corner straight through it -- and from that point
+	-- on every Blockcast starts overlapping, Roblox returns nil for a
+	-- shapecast that begins inside geometry, and the car passes through
+	-- everything forever. Pushing back out is the only thing that ends that
+	-- state.
+	local pushed, push = depenetrate(s, s.cf)
+	s.cf = pushed
+
+	if push.Magnitude > DEPEN_EPS then
+		-- Kill the velocity that drove it in, keeping whatever was sliding
+		-- along the surface. Without this the car pushes out and is shoved
+		-- straight back in on the next step, which reads as a violent buzz
+		-- against the wall rather than a car resting on it.
+		local outward = push.Unit
+		local into = s.vel:Dot(outward)
+		if into < 0 then s.vel -= outward * into end
+		s.depenCount = (s.depenCount or 0) + 1
+	end
 
 	--------------------------------------------------------------
 	-- 12. WHEEL SPIN  (visual)
@@ -654,6 +851,7 @@ local function startDriving(model, def, index)
 		pitchAngle = 0,
 		groundFrac = 0,
 		params = castParams(model),
+		overlapParams = castOverlapParams(model),
 		paramsBody = State.playerBody,
 		paramsPuppet = State.playerPuppet,
 	}

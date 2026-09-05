@@ -151,11 +151,29 @@ local function ignoreList(body, puppet)
 	return { body, puppet }
 end
 
+-- Roblox casts hit a part whether or not it COLLIDES. CanQuery is what gates
+-- them by default, and CanCollide is ignored entirely -- so every decorative
+-- non-collidable part in a map was a solid wall to the movement sweeps, while
+-- IsOccupied below (which does check part.CanCollide) considered the same part
+-- empty space. The two halves of the collision system disagreed: a
+-- non-collidable part could block a step and stop a slide, but could never
+-- push you out of itself.
+--
+-- RespectCanCollide settles it in favour of CanCollide, which is what a mapper
+-- means by the property. Assigned through pcall because it is a relatively
+-- recent addition and an unknown property assignment is an error, not a
+-- no-op -- on a client old enough to lack it the behaviour is simply what it
+-- was before.
+local function respectCanCollide(params)
+	pcall(function() params.RespectCanCollide = true end)
+	return params
+end
+
 local function MakeParams(body, puppet)
 	local p = RaycastParams.new()
 	p.FilterDescendantsInstances = ignoreList(body, puppet)
 	p.FilterType = Enum.RaycastFilterType.Exclude
-	return p
+	return respectCanCollide(p)
 end
 
 local function MakeOverlapParams(body, puppet)
@@ -163,7 +181,7 @@ local function MakeOverlapParams(body, puppet)
 	op.FilterDescendantsInstances = ignoreList(body, puppet)
 	op.FilterType = Enum.RaycastFilterType.Exclude
 	op.MaxParts = 16
-	return op
+	return respectCanCollide(op)
 end
 
 -- Broad phase: a bounds query gathers candidates (generous, since a rotated

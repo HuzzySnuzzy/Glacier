@@ -447,6 +447,10 @@ local function groundGap(model, rig)
 	local params = RaycastParams.new()
 	params.FilterDescendantsInstances = settleIgnore(model)
 	params.FilterType = Enum.RaycastFilterType.Exclude
+	-- A parked car must not come to rest on a non-collidable prop. Roblox
+	-- casts ignore CanCollide unless told otherwise; pcall'd because the
+	-- property is a recent addition and assigning an unknown one errors.
+	pcall(function() params.RespectCanCollide = true end)
 
 	local roof = rig.size.Y + 1
 	local gap, normal = probeWheels(model, rig, params, roof, roof + 600)
