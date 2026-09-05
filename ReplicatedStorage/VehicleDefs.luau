@@ -111,6 +111,30 @@ local DEFAULTS = {
 	restitution  = 0.25,      -- how much of a crash comes back as bounce
 	crashLoss    = 0.55,      -- and how much of the rest is simply eaten
 
+	--=================================================================
+	-- ENGINE AND GEARBOX
+	--=================================================================
+	-- Faked, in the sense that no torque curve drives the car -- the drive
+	-- force is still constant and the top speed is still set by drag. What
+	-- the gearbox produces is the RPM, and the RPM is what everything you
+	-- can HEAR and SEE runs off: the engine note, the shift, the backfire.
+	--
+	-- That is the right way round for an arcade car. A real gearbox that fed
+	-- back into the acceleration would mean the car's performance depended on
+	-- ratios nobody wants to tune, and the difference is inaudible next to
+	-- the difference the sound makes.
+	horsepower   = 300,       -- see driveFromPower below; this is what HP means
+	gears        = 5,
+	shiftTime    = 0.18,      -- seconds of cut drive on an upshift
+	idleRpm      = 800,
+	redlineRpm   = 6800,
+	revLimiter   = true,      -- hold at the redline in top gear rather than past it
+
+	-- Above this, an upshift spits flame. Nothing to do with the physics --
+	-- it is a decision about which cars are loud, and it is a horsepower
+	-- figure so it reads the way the rest of the engine numbers do.
+	backfirePower = 400,
+
 	seats = {
 		{ name = "driver",    offset = Vector3.new(-1.2, 0.6, 1.2) },
 		{ name = "passenger", offset = Vector3.new( 1.2, 0.6, 1.2) },
@@ -141,6 +165,26 @@ function VehicleDefs.RestHeight(def)
 		+ def.size.Y * 0.5
 end
 
+-- Horsepower to drive force.
+--
+-- The arcade model wants a constant acceleration in studs/s^2; the tuning
+-- surface people expect on a car is horsepower. Power per unit mass is the
+-- honest bridge between them -- it is what actually decides how hard a car
+-- accelerates -- so a 600hp car of the same weight accelerates twice as hard,
+-- and the same engine in something twice as heavy accelerates half as hard.
+--
+-- Anchored so the existing classes come out where they already were: 300hp in
+-- 1400kg is the 26 studs/s^2 the sedan was tuned at.
+local REFERENCE_POWER = 300
+local REFERENCE_MASS_FOR_POWER = 1400
+local REFERENCE_DRIVE = 26
+
+function VehicleDefs.DriveFromPower(horsepower, mass)
+	local powerToWeight = (horsepower / math.max(mass, 1))
+		/ (REFERENCE_POWER / REFERENCE_MASS_FOR_POWER)
+	return REFERENCE_DRIVE * powerToWeight
+end
+
 VehicleDefs.Classes = {
 	-- The one you get from a bare `vehicle_spawn`. Deliberately middle of the
 	-- road: quick enough to be worth driving, slow enough to survive a mistake.
@@ -153,7 +197,7 @@ VehicleDefs.Classes = {
 		label      = "Coupe",
 		size       = Vector3.new(5.6, 2.2, 10.5),
 		mass       = 1150,
-		drive      = 32,
+		horsepower = 420,       -- and it backfires, being over the default threshold
 		topSpeed   = 112,
 		grip       = 31,
 		balance    = 0.38,
@@ -168,7 +212,8 @@ VehicleDefs.Classes = {
 		label       = "Van",
 		size        = Vector3.new(7, 4.2, 14),
 		mass        = 2600,
-		drive       = 18,
+		horsepower  = 385,      -- a lot, but it is moving 2600kg
+		backfirePower = 9999,   -- and a van does not crackle on the overrun
 		topSpeed    = 72,
 		brake       = 30,
 		grip        = 27,
@@ -211,6 +256,12 @@ function VehicleDefs.Get(class)
 	-- The falloff this produces is the right shape for free, too: constant
 	-- engine force against a v^2 drag is quick off the line and slow at the
 	-- top, which is what a car does.
+	-- DRIVE FIRST, because the drag below is derived from it. Deriving drag
+	-- from a drive figure that is about to be replaced leaves the car's real
+	-- top speed at whatever the old one implied, which reads as horsepower
+	-- being ignored.
+	def.drive = VehicleDefs.DriveFromPower(def.horsepower, def.mass)
+
 	def.dragQuad = math.max(def.drive - def.dragLinear * def.topSpeed, 0.01)
 		/ (def.topSpeed * def.topSpeed)
 
@@ -504,8 +555,24 @@ local function gatherWheels(model, chassis, def)
 	local wheels = {}
 	local container = wheelsFolder(model)
 
-	for _, part in ipairs(container and container:GetDescendants() or {}) do
-		if part:IsA("BasePart") and part ~= chassis then
+	-- DIRECT CHILDREN, not descendants. A wheel is a thing you hang other
+	-- things off -- a smoke emitter, a broken-wheel mesh to swap in, a brake
+	-- disc -- and walking the whole subtree turns every one of those into
+	-- another wheel. Four wheels with a mesh inside each became eight, and
+	-- since the ride height is decided by whichever reaches lowest, one stray
+	-- child was enough to park the car wrong and cast rays from inside itself.
+	--
+	-- A child Model is followed to its PrimaryPart, so a wheel built as an
+	-- assembly still works; anything else is ignored.
+	local function wheelPartOf(child)
+		if child:IsA("BasePart") then return child end
+		if child:IsA("Model") then return child.PrimaryPart end
+		return nil
+	end
+
+	for _, child in ipairs(container and container:GetChildren() or {}) do
+		local part = wheelPartOf(child)
+		if part and part ~= chassis then
 			local cf = localOffset(chassis, part)
 			-- WHERE YOU PUT THE WHEEL IS WHERE IT SITS AT REST. That is the
 			-- only reading a modeller would expect, and the previous one --
@@ -526,6 +593,9 @@ local function gatherWheels(model, chassis, def)
 				restRot = restRot,
 				radius = wheelRadiusOf(part),
 				ground = wheelGroundOffset(part, restRot),
+				-- The CHILD, not the part, so a wheel built as a Model has
+				-- its emitters found under the thing you actually named.
+				holder = child,
 			})
 		end
 	end
@@ -572,6 +642,124 @@ local function gatherWheels(model, chassis, def)
 	return wheels
 end
 
+--=====================================================================
+-- GEARBOX
+--=====================================================================
+-- The band of road speed a gear covers. Geometric rather than even, because
+-- first gear on a real car is short and top gear is long: at five gears, 1st
+-- reaches about a seventh of top speed and 5th covers the last quarter.
+--
+-- Nothing here feeds back into the physics. The gearbox exists to produce an
+-- RPM, and the RPM is what the engine note, the shift and the backfire run
+-- off -- see the note on the def fields.
+local GEAR_SPREAD = 1.35
+
+function VehicleDefs.GearTop(def, gear)
+	local n = math.max(def.gears, 1)
+	return def.topSpeed * (math.clamp(gear, 0, n) / n) ^ GEAR_SPREAD
+end
+
+-- Where in its gear the engine is, 0 at the bottom of the band and 1 at the
+-- top. Above 1 means the gear has run out and it is time to shift up.
+function VehicleDefs.GearFraction(def, gear, speed)
+	local low = VehicleDefs.GearTop(def, gear - 1)
+	local high = VehicleDefs.GearTop(def, gear)
+	if high - low < 1e-3 then return 0 end
+	return (math.abs(speed) - low) / (high - low)
+end
+
+-- Where the revs land at the BOTTOM of a gear, as a fraction of the way from
+-- idle to the redline. A gearbox is chosen so the next gear picks up in the
+-- meat of the power, not at a standstill -- so an upshift drops the engine to
+-- here, not to idle.
+--
+-- Mapping the band straight onto idle-to-redline is the obvious version and
+-- it sounds wrong: every shift cuts the engine to a tickover for an instant,
+-- as though it had stalled and caught again.
+local IN_GEAR_FLOOR = 0.35
+
+-- Engine speed for a given gear and road speed.
+function VehicleDefs.RpmFor(def, gear, speed)
+	local span = def.redlineRpm - def.idleRpm
+	local fraction = math.clamp(VehicleDefs.GearFraction(def, gear, speed), 0, 1.05)
+	local inGear = def.idleRpm + span * (IN_GEAR_FLOOR + (1 - IN_GEAR_FLOOR) * fraction)
+
+	-- Below walking pace the engine is idling rather than lugging: a car at a
+	-- standstill in first should tick over, not sit at a third of its redline.
+	local rolling = math.clamp(math.abs(speed) / 4, 0, 1)
+	return def.idleRpm + (inGear - def.idleRpm) * rolling
+end
+
+--=====================================================================
+-- ATTRIBUTE TUNING
+--=====================================================================
+-- Anything in the def can be overridden by an attribute of the same name on
+-- the vehicle MODEL. Set MaxSpeed to 130 on your Car and that car does 130,
+-- whatever its class says, with no code change and no new class.
+--
+-- Friendly names first, because nobody opening the Properties panel wants to
+-- type "topSpeed" or guess that "drive" is measured in studs per second
+-- squared. The right-hand side is the field it actually sets.
+local ATTRIBUTE_ALIASES = {
+	MaxSpeed      = "topSpeed",
+	TopSpeed      = "topSpeed",
+	HP            = "horsepower",
+	Horsepower    = "horsepower",
+	Power         = "horsepower",
+	Mass          = "mass",
+	Weight        = "mass",
+	Gears         = "gears",
+	GearShiftSpeed= "shiftTime",
+	ShiftTime     = "shiftTime",
+	Grip          = "grip",
+	Brakes        = "brake",
+	Steering      = "steerAngle",
+	Suspension    = "suspension",
+	BodyRoll      = "bodyRoll",
+	Redline       = "redlineRpm",
+	Idle          = "idleRpm",
+	BackfirePower = "backfirePower",
+}
+
+-- Applied to a COPY, so one car's attributes never leak into the class every
+-- other car of that class is built from.
+function VehicleDefs.ApplyAttributes(def, model)
+	if not model then return def end
+
+	local attributes = model:GetAttributes()
+	if not attributes then return def end
+
+	local tuned, touched = {}, false
+	for k, v in pairs(def) do tuned[k] = v end
+
+	for name, value in pairs(attributes) do
+		local field = ATTRIBUTE_ALIASES[name]
+		-- An exact field name works too, so anything without a friendly alias
+		-- is still reachable rather than being a hidden second class of knob.
+		if not field and def[name] ~= nil and type(def[name]) == type(value) then
+			field = name
+		end
+
+		if field and def[field] ~= nil and type(value) == type(def[field]) then
+			tuned[field] = value
+			touched = true
+		end
+	end
+
+	if not touched then return def end
+
+	-- Re-derived, because both of these are computed FROM fields the
+	-- attributes may have just changed. Setting MaxSpeed without redoing the
+	-- drag would leave the car's real top speed at whatever the class said,
+	-- which is the sort of thing that looks like the attribute being ignored.
+	tuned.drive = VehicleDefs.DriveFromPower(tuned.horsepower, tuned.mass)
+	tuned.dragQuad = math.max(tuned.drive - tuned.dragLinear * tuned.topSpeed, 0.01)
+		/ (tuned.topSpeed * tuned.topSpeed)
+	tuned.yawResponse = YAW_RESPONSE_AT_REFERENCE * (REFERENCE_MASS / math.max(tuned.mass, 1))
+
+	return tuned
+end
+
 -- Measured once per model and cached on it. Weak keys, so a despawned vehicle
 -- does not keep its rig (or its parts) alive.
 function VehicleDefs.Rig(model, def)
@@ -581,6 +769,12 @@ function VehicleDefs.Rig(model, def)
 	if cached and cached.chassis and cached.chassis.Parent then return cached end
 
 	def = def or VehicleDefs.GetOrDerive(model:GetAttribute("Class"))
+
+	-- Per-car tuning from the model's own attributes, applied HERE so there
+	-- is one place a def becomes final. Everything downstream reads rig.def
+	-- rather than the class it started from, which is what makes setting
+	-- MaxSpeed on one Car in Studio actually change that car.
+	def = VehicleDefs.ApplyAttributes(def, model)
 
 	local chassis = model.PrimaryPart or model:FindFirstChild("Chassis")
 	if not chassis or not chassis:IsA("BasePart") then return nil end

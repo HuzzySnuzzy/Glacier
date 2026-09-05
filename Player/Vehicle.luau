@@ -41,6 +41,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config      = require(ReplicatedStorage:WaitForChild("Config"))
 local VehicleDefs = require(ReplicatedStorage:WaitForChild("VehicleDefs"))
+local VehicleFX   = require(script.Parent.VehicleFX)
 local State       = require(script.Parent.State)
 
 local plr = Players.LocalPlayer
@@ -564,6 +565,58 @@ local function step(s, dt)
 	s.steer = approach(s.steer or 0, targetSteer, rate, dt)
 
 	--------------------------------------------------------------
+	-- 3b. GEARBOX
+	--------------------------------------------------------------
+	-- Faked, and deliberately: no ratio here feeds back into how hard the car
+	-- accelerates. What it produces is an RPM and a shift event, which is
+	-- what the engine note, the exhaust and the backfire are driven from --
+	-- and that is the whole of what a gearbox contributes to how a car FEELS
+	-- in a game like this.
+	--
+	-- The one thing it does do to the physics is cut the drive for shiftTime
+	-- on an upshift. That pause is most of the character: it is why a fast
+	-- car in GTA lurches up through the gears instead of pulling smoothly.
+	local roadAbs = math.abs(roadSpeed)
+	s.gear = s.gear or 1
+	s.shiftRemaining = math.max((s.shiftRemaining or 0) - dt, 0)
+	s.shiftedUp = false
+
+	if s.shiftRemaining <= 0 then
+		local fraction = VehicleDefs.GearFraction(def, s.gear, roadAbs)
+
+		if fraction > 1 and s.gear < def.gears then
+			s.gear += 1
+			s.shiftRemaining = def.shiftTime
+			s.shiftedUp = true
+
+		-- HYSTERESIS on the way down, and it has to be well inside the lower
+		-- gear's band rather than at its edge. Downshifting the moment the
+		-- fraction goes negative puts the speed right at the top of the gear
+		-- below, which immediately shifts up again -- a gearbox that hunts
+		-- between two ratios several times a second.
+		elseif s.gear > 1 and VehicleDefs.GearFraction(def, s.gear - 1, roadAbs) < 0.75 then
+			s.gear -= 1
+			s.shiftRemaining = def.shiftTime * 0.5   -- downshifts are quicker
+		end
+	end
+
+	s.rpm = VehicleDefs.RpmFor(def, s.gear, roadAbs)
+	if def.revLimiter and s.gear >= def.gears then
+		s.rpm = math.min(s.rpm, def.redlineRpm)
+	end
+
+	-- Idle needs the engine to be turning even when the car is not, and the
+	-- gear fraction alone gives idle exactly at a standstill. A touch of
+	-- throttle should lift the note before the car has actually moved.
+	if roadAbs < 1 and throttleAxis > 0.01 then
+		s.rpm = math.max(s.rpm, def.idleRpm + (def.redlineRpm - def.idleRpm) * 0.25)
+	end
+
+	-- Flagged rather than fired, so the effects layer decides what a backfire
+	-- looks like and this stays about the car.
+	s.backfired = s.shiftedUp and (def.horsepower >= def.backfirePower)
+
+	--------------------------------------------------------------
 	-- 4. LONGITUDINAL
 	--------------------------------------------------------------
 	local accel = Vector3.zero
@@ -581,7 +634,11 @@ local function step(s, dt)
 		-- hill on two wheels does not accelerate as if it were planted.
 		local traction = groundFrac
 
-		if throttleAxis > 0.01 then
+		-- Mid-shift the clutch is out and the engine is not driving the
+		-- wheels. Brakes still work: you can stand on them during a shift.
+		local shifting = (s.shiftRemaining or 0) > 0
+
+		if throttleAxis > 0.01 and not shifting then
 			if roadSpeed < -1 then
 				-- Forward while rolling backwards is braking, not launching.
 				tyre += forward * def.brake * traction * throttleAxis
@@ -592,7 +649,7 @@ local function step(s, dt)
 				tyre += forward * def.drive * powerScale * traction * throttleAxis
 			end
 
-		elseif throttleAxis < -0.01 then
+		elseif throttleAxis < -0.01 and (roadSpeed > 1 or not shifting) then
 			if roadSpeed > 1 then
 				tyre += forward * -def.brake * traction * -throttleAxis
 			else
@@ -1069,7 +1126,10 @@ local function startDriving(model, def, index)
 	sim = {
 		model = model,
 		chassis = chassis,
-		def = def,
+		-- The RIG's def, not the class it started from: Rig applies the
+		-- model's own attributes, and driving the untuned one would mean
+		-- MaxSpeed and HP were read and then ignored.
+		def = rig.def,
 		rig = rig,
 		cf = chassis.CFrame,
 		renderCf = chassis.CFrame,
@@ -1110,7 +1170,11 @@ local function onStateChange(packet)
 	if not isMe then
 		-- Someone else's transition. The only thing we care about is dropping
 		-- a stale interpolation buffer when a car stops being driven.
-		if not packet.entered and model then observed[model] = nil end
+		if not packet.entered and model then
+			local entry = observed[model]
+			if entry and entry.rig then VehicleFX.Quiet(entry.rig) end
+			observed[model] = nil
+		end
 		return
 	end
 
@@ -1130,6 +1194,10 @@ local function onStateChange(packet)
 			stopDriving()
 		end
 	else
+		-- Quietened before the handle is dropped, or the car is left revving
+		-- and smoking with nobody in it.
+		if sim and sim.rig then VehicleFX.Quiet(sim.rig) end
+
 		seatModel = nil
 		seatIndex = nil
 		State.inVehicle = false
@@ -1299,7 +1367,8 @@ local function pushObserved(packet)
 	local entry = observed[model]
 	if not entry then
 		local def = VehicleDefs.GetOrDerive(model:GetAttribute("Class"))
-		entry = { snapshots = {}, def = def, rig = VehicleDefs.Rig(model, def) }
+		local rig = VehicleDefs.Rig(model, def)
+		entry = { snapshots = {}, def = (rig and rig.def) or def, rig = rig }
 		observed[model] = entry
 	end
 	if not entry.def then return end
@@ -1313,6 +1382,14 @@ local function pushObserved(packet)
 		spin = num(packet.wheelSpin, 0),
 		roll = num(packet.roll, 0),
 		pitch = num(packet.pitch, 0),
+		-- What the effects run off. Cheap, and it means another player's car
+		-- sounds and smokes like the driver's own rather than being a silent
+		-- prop sliding past.
+		rpm = num(packet.rpm, 0),
+		gear = num(packet.gear, 1),
+		throttle = num(packet.throttle, 0),
+		slipFront = num(packet.slipFront, 0),
+		slipRear = num(packet.slipRear, 0),
 	}
 
 	-- Inserted in time order: a packet delayed in flight carries an OLD pose,
@@ -1374,6 +1451,23 @@ local function drawObserved()
 				-- the road exactly like your own.
 				local flat = cf * CFrame.Angles(math.rad(-pitch), 0, math.rad(-roll))
 				drawWheels(entry.rig, flat, steer, spin, nil)
+
+				-- Someone else's car gets the same treatment from the same
+				-- code. The gear is what triggers a backfire, and comparing
+				-- it against the last one we drew means the crack lands
+				-- without a separate event having to survive the wire.
+				local shifted = entry.lastGear ~= nil and a.gear > entry.lastGear
+				entry.lastGear = a.gear
+
+				VehicleFX.Update(model, entry.rig, {
+					rpm = a.rpm,
+					gear = a.gear,
+					throttle = a.throttle,
+					slipFront = a.slipFront,
+					slipRear = a.slipRear,
+					grounded = true,
+					backfired = shifted and entry.def.horsepower >= entry.def.backfirePower,
+				}, 0)
 			end
 		end
 	end
@@ -1447,6 +1541,18 @@ function Vehicle.Update(deltaTime)
 		-- the whole time, but every wheel was leaning with the shell.
 		drawWheels(rig, physicsCf, sim.steer, sim.wheelSpin, sim.contacts)
 
+		-- Everything you can hear or see but that does not move the car. Fed
+		-- the sim's own numbers; it publishes nothing back.
+		VehicleFX.Update(seatModel, rig, {
+			rpm = sim.rpm,
+			gear = sim.gear,
+			throttle = math.clamp(num(State.forwardMoveAxis, 0), 0, 1),
+			slipFront = sim.slipFront,
+			slipRear = sim.slipRear,
+			grounded = (sim.groundFrac or 0) > 0.01,
+			backfired = sim.backfired,
+		}, deltaTime)
+
 		State.vehicleSpeed = math.abs(sim.roadSpeed or 0)
 		State.vehicleSlip = sim.slip or 0
 		State.vehicleGrounded = (sim.groundFrac or 0) > 0.01
@@ -1479,6 +1585,11 @@ function Vehicle.Sync()
 		-- physics one with these applied.
 		roll = sim.rollAngle,
 		pitch = sim.pitchAngle,
+		rpm = sim.rpm,
+		gear = sim.gear,
+		throttle = math.clamp(num(State.forwardMoveAxis, 0), 0, 1),
+		slipFront = sim.slipFront,
+		slipRear = sim.slipRear,
 		vel = sim.vel,
 		steer = sim.steer,
 		wheelSpin = sim.wheelSpin,

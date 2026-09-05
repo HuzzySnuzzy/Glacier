@@ -246,7 +246,10 @@ local function spawnVehicle(class, cframe)
 	-- a model with big wheels parks on them rather than on a table's numbers.
 	model:PivotTo(cframe + Vector3.new(0, VehicleDefs.RigRestHeight(rig), 0))
 
-	vehicles[model] = { def = def, rig = rig, lastSync = 0 }
+	-- rig.def, because Rig applies the model's attributes to it. Keeping the
+	-- class def here would make the server's idea of the car disagree with
+	-- the driver's the moment anyone tuned one in Studio.
+	vehicles[model] = { def = rig.def, rig = rig, lastSync = 0 }
 	return model
 end
 
