@@ -867,7 +867,7 @@ function Physics.Step(deltaTime)
 		-- this is hurt itself.
 		local impact = -math.min(vel.Y, 0)
 		State.lastLandSpeed = impact
-		if Config.sv_falldamage ~= false and impact > (Config.sv_falldamage_threshold or 52.7) then
+		if Config.sv_falldamage ~= false and impact > (Config.sv_falldamage_safe or 52.7) then
 			local remote = ReplicatedStorage:FindFirstChild("FallDamage")
 			if remote then remote:FireServer(impact) end
 		end

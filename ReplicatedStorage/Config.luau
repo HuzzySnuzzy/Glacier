@@ -684,18 +684,23 @@ Define("sv_lockLoadout", false, FCVAR.REPLICATED + FCVAR.CHEAT)
 --=====================================================================
 -- FALL DAMAGE
 --=====================================================================
--- CS's shape: nothing at all below a threshold, then linear in the excess.
--- GoldSrc used (speed - 580) * 0.0605 against a 580 unit/s floor, which at 11
--- units per stud is 52.7 studs/s -- about a four stud drop. The default here
--- is that curve converted, so a two storey fall hurts and a jump does not.
+-- Defined by its two ENDPOINTS, the way Source defines it: nothing at or below
+-- the safe speed, exactly 100 at the fatal speed, linear between them and
+-- carrying on past. 580 and 1024 units/s are the Source constants; at 11 units
+-- per stud that is 52.7 and 93.1.
+--
+-- Deriving the slope from the endpoints is what keeps them honest. The first
+-- version carried a separate scale of 0.0605 per unit -- the right shape but
+-- a quarter of the steepness, so the speed that is supposed to kill outright
+-- took 27 damage and you walked away from falls CS would not let you.
 --
 -- The client owns the impact (it owns the movement), so it reports the landing
 -- speed and the SERVER decides the damage. The only thing a lying client can
 -- do with it is hurt itself.
 Define("sv_falldamage", true, FCVAR.REPLICATED)
-Define("sv_falldamage_threshold", 52.7, FCVAR.REPLICATED)  -- studs/s; 580 units
-Define("sv_falldamage_scale", 0.665, FCVAR.REPLICATED)     -- 0.0605 per unit, per stud
-Define("sv_falldamage_fatal", 0, FCVAR.REPLICATED)         -- studs/s that always kills; 0 = never
+Define("sv_falldamage_safe", 52.7, FCVAR.REPLICATED)   -- studs/s; 580 units, no damage below
+Define("sv_falldamage_fatal", 93.1, FCVAR.REPLICATED)  -- studs/s; 1024 units, exactly 100 damage
+Define("sv_falldamage_scale", 1, FCVAR.REPLICATED)     -- multiplier over the whole curve
 
 
 --=====================================================================

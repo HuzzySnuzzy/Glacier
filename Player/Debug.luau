@@ -136,8 +136,51 @@ local function hex(c)
 		math.floor(c.R * 255 + 0.5), math.floor(c.G * 255 + 0.5), math.floor(c.B * 255 + 0.5))
 end
 
+-- RichText is markup, so a literal < in the payload is a parse error and
+-- Roblox drops the WHOLE label to raw text when it hits one. "<-- STARVED"
+-- and friends have to go through this first.
+local function esc(text)
+	return (tostring(text)
+		:gsub("&", "&amp;")
+		:gsub("<", "&lt;")
+		:gsub(">", "&gt;"))
+end
+
 local function paint(text, colour)
 	return ('<font color="%s">%s</font>'):format(hex(colour), tostring(text))
+end
+
+-- Row helpers for the stats panel. The label is dim so the eye skips it and
+-- lands on the number; the number carries the colour.
+local function row(label, ...)
+	return paint(esc(("%-9s "):format(label)), PALETTE.dim) .. table.concat({ ... })
+end
+
+local function v(fmt, ...)
+	return paint(esc(fmt:format(...)), PALETTE.value)
+end
+
+local function vc(colour, fmt, ...)
+	return paint(esc(fmt:format(...)), colour)
+end
+
+local function dim(fmt, ...)
+	return paint(esc(fmt:format(...)), PALETTE.dim)
+end
+
+-- Booleans keep their old %-5s width so the columns still line up; only the
+-- colour is new. Green means the flag is set, grey means it isn't -- so a
+-- glance down the block reads as "what is true about me right now".
+local function flag(b)
+	return paint(("%-5s"):format(b and "true" or "false"),
+		b and PALETTE.good or PALETTE.dim)
+end
+
+-- A movement key lights up when it is held. Reading the row is then the same
+-- gesture as looking at your hand, which is the point of having it.
+local function key(code, glyph)
+	local down = UserInputService:IsKeyDown(code)
+	return paint(glyph, down and PALETTE.good or PALETTE.dim)
 end
 
 -- Green when full, amber past halfway down, red when it is nearly gone. Used
@@ -157,6 +200,123 @@ local function speedColour(speed, walk)
 	if speed < walk * 0.9 then return PALETTE.value end
 	if speed < walk * 1.15 then return PALETTE.warn end
 	return PALETTE.cool
+end
+
+--------------------------------------------------------------------
+-- CLIENT MACHINE INFO
+--------------------------------------------------------------------
+-- Everything Roblox will actually tell a LocalScript about the machine it is
+-- running on.
+--
+-- What is NOT here, because there is no API for it and guessing would be
+-- worse than silence: CPU model, core count, GPU model, driver version, OS
+-- build, installed RAM, and the monitor's refresh rate. Roblox exposes none
+-- of them to game code. What you get instead is the platform class, the
+-- window, the graphics quality the user has chosen, and the live cost
+-- figures -- which are the parts you can act on anyway.
+
+local Stats = game:GetService("Stats")
+local RunService = game:GetService("RunService")
+local LocalizationService = game:GetService("LocalizationService")
+
+-- Every one of these reads can throw on some platform or another (VREnabled
+-- on an old client, ServerStatsItem before the first packet, GetTotalMemory
+-- under a restricted context). A debug panel is the last thing that should
+-- take the frame down with it.
+local function safe(fn, fallback)
+	local ok, result = pcall(fn)
+	if ok and result ~= nil then return result end
+	return fallback
+end
+
+local function platformName()
+	if safe(function() return UserInputService.VREnabled end, false) then return "vr" end
+	if safe(function() return GuiService:IsTenFootInterface() end, false) then return "console" end
+	if UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled then return "touch" end
+	if UserInputService.KeyboardEnabled then return "desktop" end
+	return "unknown"
+end
+
+-- Cached: none of it changes for the life of the session, and version() in
+-- particular is not free.
+local sysStatic
+local function staticInfo()
+	if sysStatic then return sysStatic end
+
+	local inputs = {}
+	if UserInputService.KeyboardEnabled then table.insert(inputs, "kbd") end
+	if UserInputService.MouseEnabled then table.insert(inputs, "mouse") end
+	if UserInputService.TouchEnabled then table.insert(inputs, "touch") end
+	if UserInputService.GamepadEnabled then table.insert(inputs, "pad") end
+
+	sysStatic = {
+		platform = platformName(),
+		client   = safe(function() return version() end, "?"),
+		studio   = RunService:IsStudio(),
+		place    = tostring(game.PlaceId),
+		job      = (game.JobId ~= "" and game.JobId:sub(1, 8)) or "local",
+		locale   = safe(function() return LocalizationService.SystemLocaleId end, "?"),
+		inputs   = (#inputs > 0) and table.concat(inputs, "/") or "none",
+	}
+	return sysStatic
+end
+
+local function qualityName()
+	local q = safe(function()
+		return UserSettings():GetService("UserGameSettings").SavedQualityLevel
+	end, nil)
+	if not q then return "?" end
+	-- "Automatic" and "Level07" both come back as enum names; strip the noise.
+	local name = tostring(q):gsub("^Enum%.SavedQualitySetting%.", "")
+	return (name:gsub("^QualityLevel0?", "L"))
+end
+
+-- Live network round trip, in ms. Client-only, and absent until the first
+-- stats packet lands, so a nil here is "too early" rather than "broken".
+local function pingMs()
+	return safe(function()
+		return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
+	end, nil)
+end
+
+local function sysBlock()
+	local info = staticInfo()
+	local cam = workspace.CurrentCamera
+	local vp = cam and cam.ViewportSize or Vector2.zero
+
+	local mem = safe(function() return Stats:GetTotalMemoryUsageMb() end, 0)
+	local ping = pingMs()
+	local heartbeat = safe(function() return Stats.HeartbeatTimeMs end, 0)
+	local physStep = safe(function() return Stats.PhysicsStepTimeMs end, 0)
+
+	-- Colour by whether the number is a problem, on the same rule as the rest
+	-- of the HUD: green fine, amber worth a look, red is the thing that is
+	-- making the game feel bad.
+	local pingColour = PALETTE.dim
+	if ping then
+		pingColour = (ping < 60 and PALETTE.good)
+			or (ping < 120 and PALETTE.warn) or PALETTE.bad
+	end
+	local memColour = (mem < 1500 and PALETTE.good)
+		or (mem < 3000 and PALETTE.warn) or PALETTE.bad
+
+	return table.concat({
+		row("client", v("%s", info.client),
+			dim("   %s", info.platform),
+			info.studio and paint("  studio", PALETTE.warn) or ""),
+		row("input", v("%s", info.inputs),
+			dim("   locale "), v("%s", info.locale)),
+		row("window", v("%dx%d", vp.X, vp.Y),
+			dim("   quality "), v("%s", qualityName())),
+		row("memory", vc(memColour, "%6.0f MB", mem),
+			dim("   ping "),
+			ping and vc(pingColour, "%.0f ms", ping) or dim("--")),
+		row("engine", v("hb %5.2f ms", heartbeat),
+			dim("  phys "), v("%5.2f ms", physStep)),
+		row("session", dim("place "), v("%s", info.place),
+			dim("  job "), v("%s", info.job),
+			dim("  "), v("%s", os.date("%H:%M:%S"))),
+	}, "\n")
 end
 
 --------------------------------------------------------------------
@@ -216,7 +376,8 @@ function Debug.Init()
 
 	-- Stats block, top-left. Was 460px tall for ~35 lines at 14px, which
 	-- clipped the config rows off the bottom; the panel has grown since.
-	statsLabel = makeLabel(gui, UDim2.new(0, 12, 0, 12), UDim2.new(0, 360, 0, 700), 14)
+	statsLabel = makeLabel(gui, UDim2.new(0, 12, 0, 12), UDim2.new(0, 420, 0, 760), 14)
+	statsLabel.RichText = true
 	statsLabel.Position = UDim2.new(0, 12, 0, 12 + GuiService:GetGuiInset().Y * 0.25)
 
 	-- Bottom-right, where an ammo counter would live.
@@ -291,17 +452,42 @@ local function bar(fraction, width)
 	return string.rep("|", filled) .. string.rep(".", width - filled)
 end
 
+-- Resolve the puppet from the world every frame instead of trusting
+-- State.playerPuppet.
+--
+-- This is the whole fix for the HUD desync. A respawn destroys the old puppet
+-- and the server parents a NEW one under the RawBody, but State.playerPuppet
+-- is only rewritten by Character.Adopt/Spawn. Between the two, the stale
+-- reference is not nil and not obviously broken -- a destroyed Instance still
+-- answers GetAttribute with whatever it held when it was destroyed -- so the
+-- panel kept happily reporting the health of a corpse.
+local function livePuppet()
+	local body = workspace:FindFirstChild(plr.UserId .. "RawBody")
+	local fromWorld = body and body:FindFirstChild("Puppet")
+	if fromWorld and fromWorld:IsA("Model") then return fromWorld end
+
+	-- Fallback for anything that reparents the puppet elsewhere (spectating,
+	-- a test rig): the cached one is still fine as long as it is in the world.
+	local cached = State.playerPuppet
+	if cached and cached.Parent and cached:IsDescendantOf(workspace) then
+		return cached
+	end
+	return nil
+end
+
 local function updatePlayerPanel()
-	local puppet = State.playerPuppet
+	local puppet = livePuppet()
 	local lines = {}
 
 	local name = plr.DisplayName ~= plr.Name
 		and ("%s (%s)"):format(plr.DisplayName, plr.Name) or plr.Name
-	table.insert(lines, paint(name, PALETTE.name)
+	table.insert(lines, paint(esc(name), PALETTE.name)
 		.. paint(("   #%d"):format(plr.UserId), PALETTE.dim))
 
 	local team = plr.Team and plr.Team.Name or "none"
-	local alive = puppet and puppet:GetAttribute("Dead") ~= true and puppet:GetAttribute("Health")
+	local hpNow = puppet and puppet:GetAttribute("Health")
+	local alive = puppet ~= nil and puppet:GetAttribute("Dead") ~= true
+		and (hpNow == nil or hpNow > 0)
 	table.insert(lines, paint("team ", PALETTE.dim) .. paint(team, PALETTE.value)
 		.. paint("   ", PALETTE.dim)
 		.. (alive and paint("ALIVE", PALETTE.good) or paint("DEAD", PALETTE.bad)))
@@ -333,7 +519,7 @@ local function updatePlayerPanel()
 		.. paint(("x%.2f"):format(scale), scale < 0.999 and PALETTE.warn or PALETTE.value)
 		.. paint("   last land ", PALETTE.dim)
 		.. paint(("%.0f"):format(State.lastLandSpeed or 0),
-			(State.lastLandSpeed or 0) > num(Config.sv_falldamage_threshold, 52.7)
+			(State.lastLandSpeed or 0) > num(Config.sv_falldamage_safe, 52.7)
 				and PALETTE.bad or PALETTE.value))
 
 	playerLabel.Text = table.concat(lines, "\n")
@@ -405,6 +591,7 @@ function Debug.Update(deltaTime)
 
 	statsLabel.Visible = showHud
 	speedLabel.Visible = showHud
+	playerLabel.Visible = showHud
 	graphFrame.Visible = showGraph
 	weaponLabel.Visible = showWeapon
 	hullBox.Adornee = (Config.cl_debugHull and body) or nil
@@ -427,14 +614,18 @@ function Debug.Update(deltaTime)
 	local cvarScale = num(Config.host_timescale, 1)
 	local scaleDrift = math.abs(stateScale - cvarScale) > 1e-3
 
+	-- ---- player panel ----
+	-- Outside the body gate on purpose: when the body is gone is exactly when
+	-- you want to see that you are DEAD, and a panel that stops updating is a
+	-- panel that lies.
+	if showHud then updatePlayerPanel() end
+
 	-- ---- speedometer + stats ----
 	if showHud and body then
 		speedLabel.Text = string.format("%.0f", speed)
 		-- Coloured by how fast rather than by grounded: the interesting thing
 		-- about a number on a speedometer is the number.
 		speedLabel.TextColor3 = speedColour(speed, num(Config.sv_maxspeed, 22.7))
-
-		updatePlayerPanel()
 
 		local targetHz = num(Config.sv_PhysicsHz, 60)
 		local hzWarn = (displayHz < targetHz * 0.9) and "  <-- STARVED" or ""
@@ -458,73 +649,104 @@ function Debug.Update(deltaTime)
 		local brakeWindow = num(Config.mv_brakingWindow)
 		local braking = brakeElapsed >= brakeWindow
 
+		local fpsColour = (displayFps < 30 and PALETTE.bad)
+			or (displayFps < 55 and PALETTE.warn) or PALETTE.good
+		local hzColour = (displayHz < targetHz * 0.9) and PALETTE.bad or PALETTE.good
+		local driftMag = (actualVel - vel).Magnitude
+		local driftColour = (driftMag > 5 and PALETTE.bad)
+			or (driftMag > 1 and PALETTE.warn) or PALETTE.good
+		local depen = int(State.depenCount)
+		local landSpeed = num(State.lastLandSpeed)
+
 		statsLabel.Text = table.concat({
-			string.format("fps       %6.1f", displayFps),
-			string.format("phys hz   %6.1f / %d%s", displayHz, int(targetHz), hzWarn),
-			string.format("dt game   %6.4f   real %6.4f", deltaTime, realDt),
+			sysBlock(),
 			"",
-			string.format("speed     %6.2f   (peak %.2f)", speed, peakSpeed),
-			string.format("vel       %s", fmtVec(vel)),
-			string.format("vert      %6.2f", vel.Y),
-			string.format("wishdir   %s  |%.2f|", fmtVec(wd), wd.Magnitude),
-			string.format("pos       %s", fmtVec(body.Position)),
-			string.format("hull      %s", fmtVec(body.Size)),
-			string.format("gnd nrm   %s", fmtVec(State.groundNormal or Vector3.yAxis)),
+			row("fps", vc(fpsColour, "%6.1f", displayFps)),
+			row("phys hz", vc(hzColour, "%6.1f", displayHz),
+				dim(" / %d", int(targetHz)),
+				hzWarn ~= "" and vc(PALETTE.bad, "%s", hzWarn) or ""),
+			row("dt game", v("%6.4f", deltaTime), dim("   real "), v("%6.4f", realDt)),
 			"",
-			string.format("actual    %s", fmtVec(actualVel)),
-			string.format("drift     %6.2f", (actualVel - vel).Magnitude),
+			row("speed", vc(speedColour(speed, num(Config.sv_maxspeed, 22.7)), "%6.2f", speed),
+				dim("   (peak %.2f)", peakSpeed)),
+			row("vel", v("%s", fmtVec(vel))),
+			row("vert", vc(vel.Y > 0.1 and PALETTE.cool
+				or (vel.Y < -num(Config.sv_falldamage_safe, 52.7) and PALETTE.bad)
+				or PALETTE.value, "%6.2f", vel.Y)),
+			row("wishdir", v("%s", fmtVec(wd)), dim("  |%.2f|", wd.Magnitude)),
+			row("pos", v("%s", fmtVec(body.Position))),
+			row("hull", v("%s", fmtVec(body.Size))),
+			row("gnd nrm", v("%s", fmtVec(State.groundNormal or Vector3.yAxis))),
+			"",
+			row("actual", v("%s", fmtVec(actualVel))),
+			row("drift", vc(driftColour, "%6.2f", driftMag)),
 			-- depen is per-TICK: anything above 0 means the hull is inside
 			-- geometry right now. stepup is cumulative; watch it climb.
-			string.format("depen/tick %d   stepup %d", int(State.depenCount), int(State.stepUpCount)),
+			row("depen", vc(depen > 0 and PALETTE.bad or PALETTE.good, "%d", depen),
+				dim("/tick   stepup "), v("%d", int(State.stepUpCount))),
 			"",
-			string.format("grounded  %-5s  ladder %-5s  noclip %s",
-				tostring(State.isGrounded), tostring(State.onLadder), tostring(State.noclip)),
-			string.format("jumping   %-5s  diving %-5s  sprint %s",
-				tostring(State.isJumping), tostring(State.isDiving), tostring(State.isSprinting)),
+			row("grounded", flag(State.isGrounded),
+				dim("  ladder "), flag(State.onLadder),
+				dim("  noclip "), flag(State.noclip)),
+			row("jumping", flag(State.isJumping),
+				dim("  diving "), flag(State.isDiving),
+				dim("  sprint "), flag(State.isSprinting)),
 			-- Intent and hull are now two different things, separated by up to
 			-- mv_uncrouchJumpTime. Speed follows the HULL, so isCrouching
 			-- alone will lie to you for the whole transition.
-			string.format("crouch    key %-5s hull %-5s  f %.2f",
-				tostring(State.isCrouching), tostring(State.isDucked), num(State.duckFraction)),
-			string.format("prone     key %-5s hull %-5s  trans %s",
-				tostring(State.isProne), tostring(State.isProneStance),
-				yn(State.isInStanceTransition)),
+			row("crouch", dim("key "), flag(State.isCrouching),
+				dim(" hull "), flag(State.isDucked),
+				dim("  f "), v("%.2f", num(State.duckFraction))),
+			row("prone", dim("key "), flag(State.isProne),
+				dim(" hull "), flag(State.isProneStance),
+				dim("  trans "), v("%s", yn(State.isInStanceTransition))),
 			"",
-			string.format("coyote    %5.3f   buffer %5.3f", num(State.coyoteTimer), num(State.jumpBufferTimer)),
-			string.format("brake     %5.3f / %5.3f  %s", brakeElapsed, brakeWindow,
-				braking and "APPLYING" or "WITHHELD"),
-			string.format("lift %-3d  sgs %5.3f  ladderTO %5.3f",
-				int(State.duckLift), num(State.sgsGrace), num(State.ladderTimeout)),
-			string.format("airtime   %5.2fs   lastJump %.2f", num(State.dbgAirtime), num(State.dbgJumpHeight)),
+			row("coyote", v("%5.3f", num(State.coyoteTimer)),
+				dim("   buffer "), v("%5.3f", num(State.jumpBufferTimer))),
+			row("brake", v("%5.3f", brakeElapsed), dim(" / "), v("%5.3f", brakeWindow),
+				dim("  "),
+				braking and paint("APPLYING", PALETTE.warn) or paint("WITHHELD", PALETTE.good)),
+			row("lift", v("%-3d", int(State.duckLift)),
+				dim("  sgs "), v("%5.3f", num(State.sgsGrace)),
+				dim("  ladderTO "), v("%5.3f", num(State.ladderTimeout))),
+			row("airtime", v("%5.2fs", num(State.dbgAirtime)),
+				dim("   lastJump "), v("%.2f", num(State.dbgJumpHeight)),
+				dim("   land "),
+				vc(landSpeed > num(Config.sv_falldamage_safe, 52.7) and PALETTE.bad
+					or PALETTE.value, "%.0f", landSpeed)),
 			"",
-			string.format("wishCalls %d  (%s)", wishCalls, wishTag),
-			string.format("gameTime  %9.3f  (%s)", gameTime, gameTag),
-			string.format("timescale %5.3f  cvar %5.3f%s", stateScale, cvarScale,
-				scaleDrift and "  <-- DESYNC" or ""),
+			row("wishCall", v("%d", wishCalls), dim("  (%s)", wishTag)),
+			row("gameTime", v("%9.3f", gameTime), dim("  (%s)", gameTag)),
+			row("timescale", vc(scaleDrift and PALETTE.bad or PALETTE.value, "%5.3f", stateScale),
+				dim("  cvar "), v("%5.3f", cvarScale),
+				scaleDrift and vc(PALETTE.bad, "  %s", "<-- DESYNC") or ""),
 			"",
-			string.format("keys      W%s A%s S%s D%s   focus %s",
-				UserInputService:IsKeyDown(Enum.KeyCode.W) and "+" or "-",
-				UserInputService:IsKeyDown(Enum.KeyCode.A) and "+" or "-",
-				UserInputService:IsKeyDown(Enum.KeyCode.S) and "+" or "-",
-				UserInputService:IsKeyDown(Enum.KeyCode.D) and "+" or "-",
-				tostring(UserInputService.WindowFocused)),
+			row("keys",
+				key(Enum.KeyCode.W, "W"), dim(" "), key(Enum.KeyCode.A, "A"), dim(" "),
+				key(Enum.KeyCode.S, "S"), dim(" "), key(Enum.KeyCode.D, "D"),
+				dim("   focus "), flag(UserInputService.WindowFocused)),
 			"",
-			string.format("strafe    %5.1f deg  proj %5.2f / %.2f", angle, proj, num(Config.sv_air_max_wishspeed)),
+			row("strafe", v("%5.1f deg", angle),
+				dim("  proj "), v("%5.2f", proj),
+				dim(" / %.2f", num(Config.sv_air_max_wishspeed))),
 			"",
 			-- Bob is a viewmodel-only signal now. If these move and the gun
 			-- doesn't, the cause is downstream in ViewSway or the vm pivot,
 			-- not in ViewBob.
-			string.format("bob       v%+.3f l%+.3f  spd %5.2f",
-				num(ViewBob.verticalBob), num(ViewBob.lateralBob), num(ViewBob.bobSpeed)),
-			string.format("roll      %+5.2f deg", num(State.cameraRoll)),
+			row("bob", v("v%+.3f l%+.3f", num(ViewBob.verticalBob), num(ViewBob.lateralBob)),
+				dim("  spd "), v("%5.2f", num(ViewBob.bobSpeed))),
+			row("roll", v("%+5.2f deg", num(State.cameraRoll))),
 			"",
 			-- Effective friction, not just the cvar: surface and edge both
 			-- multiply it, and either can be the reason a stop feels wrong.
-			string.format("accel g%.1f a%.1f  fric %.1f x%.2f x%.2f",
-				num(Config.sv_accelerate), num(Config.sv_airaccelerate),
-				num(Config.sv_friction), surfFric, edgeFric),
-			string.format("grav %.1f  jump %.1f  step %.2f",
-				num(Config.sv_gravity), num(Config.sv_jump_impulse), num(Config.sv_stepsize)),
+			row("accel", dim("g"), v("%.1f", num(Config.sv_accelerate)),
+				dim(" a"), v("%.1f", num(Config.sv_airaccelerate)),
+				dim("  fric "), v("%.1f", num(Config.sv_friction)),
+				dim(" x"), vc(surfFric < 0.999 and PALETTE.warn or PALETTE.value, "%.2f", surfFric),
+				dim(" x"), vc(edgeFric > 1.001 and PALETTE.warn or PALETTE.value, "%.2f", edgeFric)),
+			row("grav", v("%.1f", num(Config.sv_gravity)),
+				dim("  jump "), v("%.1f", num(Config.sv_jump_impulse)),
+				dim("  step "), v("%.2f", num(Config.sv_stepsize))),
 		}, "\n")
 
 	elseif showHud then
@@ -532,13 +754,16 @@ function Debug.Update(deltaTime)
 		-- panel -- "is anything still ticking" is the question you have here.
 		speedLabel.Text = "--"
 		statsLabel.Text = table.concat({
-			"NO BODY",
+			paint("NO BODY", PALETTE.bad),
 			"",
-			string.format("fps       %6.1f", displayFps),
-			string.format("phys hz   %6.1f", displayHz),
-			string.format("gameTime  %9.3f  (%s)", gameTime, gameTag),
-			string.format("timescale %5.3f  cvar %5.3f%s", stateScale, cvarScale,
-				scaleDrift and "  <-- DESYNC" or ""),
+			sysBlock(),
+			"",
+			row("fps", v("%6.1f", displayFps)),
+			row("phys hz", v("%6.1f", displayHz)),
+			row("gameTime", v("%9.3f", gameTime), dim("  (%s)", gameTag)),
+			row("timescale", vc(scaleDrift and PALETTE.bad or PALETTE.value, "%5.3f", stateScale),
+				dim("  cvar "), v("%5.3f", cvarScale),
+				scaleDrift and vc(PALETTE.bad, "  %s", "<-- DESYNC") or ""),
 		}, "\n")
 	end
 

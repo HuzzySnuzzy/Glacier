@@ -30,16 +30,20 @@ local lastLanding = {}
 
 Players.PlayerRemoving:Connect(function(plr) lastLanding[plr] = nil end)
 
--- Returns the damage a landing at this speed costs, as CS does it: nothing at
--- all under the threshold, then linear in the excess.
+-- Returns the damage a landing at this speed costs, exactly as Source does it:
+-- nothing under the safe speed, then linear up to the fatal speed, which is
+-- worth precisely 100 damage. Source's endpoints are 580 and 1024 units/s
+-- (52.7 and 93.1 studs/s), so the slope is 100 / (1024 - 580) per unit.
 local function damageFor(speed)
-	local threshold = Config.Get("sv_falldamage_threshold") or 52.7
-	if speed <= threshold then return 0 end
+	local safe = Config.Get("sv_falldamage_safe") or 52.7
+	if speed <= safe then return 0 end
 
-	local fatal = Config.Get("sv_falldamage_fatal") or 0
-	if fatal > 0 and speed >= fatal then return math.huge end
+	-- Guarded: a fatal speed at or under the safe one would divide by zero or
+	-- flip the curve, and that is a plausible typo at a console.
+	local fatal = math.max(Config.Get("sv_falldamage_fatal") or 93.1, safe + 0.01)
 
-	return (speed - threshold) * (Config.Get("sv_falldamage_scale") or 0.665)
+	local damage = (speed - safe) * (100 / (fatal - safe))
+	return damage * (Config.Get("sv_falldamage_scale") or 1)
 end
 
 FallDamage.OnServerEvent:Connect(function(plr, speed)
@@ -58,11 +62,6 @@ FallDamage.OnServerEvent:Connect(function(plr, speed)
 	local damage = damageFor(speed)
 	if damage <= 0 then return end
 
-	if damage == math.huge then
-		Glacier.Kill(plr, nil, "fall")
-		return
-	end
-
 	-- Through Health.Damage with a leg hitgroup, which is how CS models it:
 	-- kevlar does not cover your legs, so armour never absorbs a fall.
 	Glacier.Damage(plr, damage, { hitPart = "Left Leg" })
@@ -78,7 +77,8 @@ Config.Command("falldamage_test", {
 	help = "what a landing at this speed (studs/s) would cost",
 	run = function(ctx, speed)
 		local damage = damageFor(speed)
-		local text = (damage == math.huge) and "fatal" or ("%.1f damage"):format(damage)
+		local text = ("%.1f damage"):format(damage)
+		if damage >= 100 then text = text .. " (fatal from full health)" end
 		if ctx and ctx.reply then
 			ctx.reply(("[falldamage] %.1f studs/s -> %s"):format(speed, text))
 		end

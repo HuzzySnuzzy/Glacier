@@ -598,7 +598,11 @@ local function addLog(message, kind, rich)
 	local text = tostring(message)
 	local stamp = ""
 	if Config.con_timestamp then
-		stamp = paint(("[%7.2f] "):format(State.gameTime or 0), C.spew)
+		-- Wall clock, not State.gameTime. A timestamp exists so a line can be
+		-- matched against something that happened outside the game -- a crash,
+		-- a screenshot, a message from someone else -- and gameTime is useless
+		-- for that: it starts at zero every join and host_timescale bends it.
+		stamp = paint(os.date("[%H:%M:%S] "), C.spew)
 	end
 
 	for _, lineText in ipairs(string.split(text, "\n")) do
