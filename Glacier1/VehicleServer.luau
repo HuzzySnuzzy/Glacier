@@ -78,6 +78,9 @@ local nextId = 0
 -- the def table, and the last packet's arrival time.
 local vehicles = {}
 
+-- Assigned in the SETTLING section below.
+local wake
+
 local function countVehicles()
 	local n = 0
 	for _ in pairs(vehicles) do n += 1 end
@@ -341,9 +344,204 @@ local function tryExit(plr, forced)
 		Glacier.Move(plr, CFrame.new(chassis.Position + offset + Vector3.new(0, 1, 0)))
 	end
 
+	-- The driver's sim stops the moment they leave, so whatever the car was
+	-- doing it is now doing nothing. Hand it to the settle pass.
+	if seatIndex == 1 then wake(model) end
+
 	announce(model, plr, seatIndex, false)
 	return true
 end
+
+--=====================================================================
+-- SETTLING
+--=====================================================================
+-- Nothing simulates a car that nobody is driving. The driver's client owns
+-- the sim, so with no driver there is no sim ANYWHERE -- and a spawned car
+-- simply hung wherever it was placed, in mid-air, forever. So did one whose
+-- driver got out over a drop, and one that vehicle_flip lifted clear.
+--
+-- This is the missing half, and it lives on the server because the server is
+-- the only party that exists for every vehicle at all times.
+--
+-- It is NOT the driving sim and does not try to be: no momentum, no rolling,
+-- no sliding down slopes. It answers the one question a parked car has --
+-- "where does this come to rest" -- and then goes to sleep. A car that needs
+-- real physics has a driver, and a driver has a sim.
+
+local VOID_Y = -500        -- below this it is gone, not falling
+local REST_EPSILON = 0.05  -- closer than this counts as resting
+local SETTLE_HZ = 30
+local ASLEEP_RECHECK = 0.5 -- a resting car still looks down this often
+
+-- Everything a settling car must not land on. Player bodies are the
+-- load-bearing entry: a RawBody is ANCHORED, so a car would happily come to
+-- rest on somebody's hitbox and hang there in the air.
+local function settleIgnore(model)
+	local ignore = { model }
+
+	local drops = workspace:FindFirstChild("WeaponDrops")
+	if drops then table.insert(ignore, drops) end
+
+	for _, plr in ipairs(Players:GetPlayers()) do
+		local body = Glacier.RawBody(plr)
+		if body then table.insert(ignore, body) end
+	end
+
+	return ignore
+end
+
+-- How far the car can drop before its FIRST wheel reaches its rest height,
+-- plus the average ground normal. Negative means it is embedded and has to
+-- come up. nil means there is genuinely nothing under it.
+--
+-- Straight down in WORLD space, not along the car's own up: this is gravity
+-- acting on a parked car, and gravity does not care which way it is facing.
+--
+-- TWO PROBES, and the second one is not optional.
+--
+-- Roblox raycasts ignore the part the ray STARTS INSIDE. So a car embedded in
+-- the road casts down from inside the road, hits nothing, and is reported as
+-- being over a void -- at which point it falls forever and is deleted. Silent
+-- and completely wrong.
+--
+-- The primary probe starts just above the roof, which is far enough out to
+-- see the ground the car is standing on or slightly sunk into, and near
+-- enough that a car in a tunnel still measures the tunnel FLOOR. Only when
+-- that finds nothing at all does the fallback start hundreds of studs up,
+-- which finds the top surface of whatever the car is buried in.
+--
+-- Doing the long probe first would be simpler and wrong: every car under a
+-- bridge would measure the bridge and be shoved up onto the deck.
+local function probeWheels(model, rig, params, lift, reach)
+	local cf = rig.chassis.CFrame
+	local restTravel = rig.def.suspension * (1 - VehicleDefs.RestCompression)
+	local down = Vector3.new(0, -reach, 0)
+
+	local gap, normalSum, hits = nil, Vector3.zero, 0
+
+	for _, wheel in ipairs(rig.wheels) do
+		local origin = cf * wheel.offset + Vector3.new(0, lift, 0)
+		local hit = workspace:Raycast(origin, down, params)
+		if hit then
+			-- Distance measured back to the ANCHOR, so a surface above the
+			-- anchor comes out negative and the car gets pushed out.
+			local surface = hit.Distance - lift
+			local slack = surface - (wheel.radius + restTravel)
+			if not gap or slack < gap then gap = slack end
+			normalSum += hit.Normal
+			hits += 1
+		end
+	end
+
+	if not gap then return nil end
+	local normal = (normalSum.Magnitude > 1e-3) and normalSum.Unit or Vector3.yAxis
+	return gap, normal
+end
+
+local function groundGap(model, rig)
+	local params = RaycastParams.new()
+	params.FilterDescendantsInstances = settleIgnore(model)
+	params.FilterType = Enum.RaycastFilterType.Exclude
+
+	local roof = rig.size.Y + 1
+	local gap, normal = probeWheels(model, rig, params, roof, roof + 600)
+	if gap then return gap, normal end
+
+	-- Nothing under it and nothing level with it. Either it is over a void or
+	-- it is buried deeper than the roof probe reaches, and only a probe that
+	-- starts well clear of the geometry can tell those apart.
+	return probeWheels(model, rig, params, 500, 1200)
+end
+
+local function settleStep(model, entry, dt)
+	local rig = entry.rig
+	local chassis = rig and rig.chassis
+	if not chassis or not chassis.Parent then return end
+
+	local gravity = Config.Get("sv_vehicle_gravity") or 196
+	local gap, normal = groundGap(model, rig)
+
+	if gap == nil then
+		-- Nothing underneath at all. Keep falling rather than hovering at the
+		-- edge of the world: a car pushed off the map should leave.
+		entry.fallSpeed = (entry.fallSpeed or 0) + gravity * dt
+		model:PivotTo(chassis.CFrame - Vector3.new(0, entry.fallSpeed * dt, 0))
+		entry.asleep = false
+
+		if chassis.Position.Y < VOID_Y then
+			local driver = driverOf(model)
+			if driver then Glacier.Tell(driver, "[vehicle] your car left the world", true) end
+			removeVehicle(model)
+		end
+		return
+	end
+
+	if gap > REST_EPSILON then
+		entry.fallSpeed = (entry.fallSpeed or 0) + gravity * dt
+		-- Clamped to the gap so it lands ON the ground rather than through it.
+		-- No sweep is needed for that: the gap IS the distance to contact.
+		local drop = math.min(entry.fallSpeed * dt, gap)
+		model:PivotTo(chassis.CFrame - Vector3.new(0, drop, 0))
+		entry.asleep = false
+		return
+	end
+
+	if gap < -REST_EPSILON then
+		-- Embedded -- spawned inside a ramp, or the ground moved up under it.
+		-- Pushed straight out, no bounce; gap is negative, so this lifts.
+		model:PivotTo(chassis.CFrame - Vector3.new(0, gap, 0))
+		entry.fallSpeed = 0
+		entry.asleep = false
+		return
+	end
+
+	-- Resting. Level onto the surface, keeping yaw, and stop.
+	entry.fallSpeed = 0
+	local _, yaw = chassis.CFrame:ToEulerAnglesYXZ()
+	model:PivotTo(VehicleDefs.OrientCF(chassis.Position, yaw, normal))
+	entry.asleep = true
+end
+
+-- Woken by anything that can put a car back in the air. A sleeping car whose
+-- ground is deleted underneath it still re-checks every ASLEEP_RECHECK, so
+-- this is an optimisation rather than the only way down.
+function wake(model)
+	local entry = vehicles[model]
+	if entry then
+		entry.asleep = false
+		entry.fallSpeed = 0
+	end
+end
+
+task.spawn(function()
+	local last = os.clock()
+	while true do
+		task.wait(1 / SETTLE_HZ)
+
+		local now = os.clock()
+		local dt = math.clamp(now - last, 1 / 240, 0.25)
+		last = now
+
+		for model, entry in pairs(vehicles) do
+			if not model.Parent then
+				vehicles[model] = nil
+
+			-- A driven car is the client's to move. Touching it here would
+			-- fight the driver's own sim for the same CFrame.
+			elseif not driverOf(model) then
+				if entry.asleep then
+					if now - (entry.lastSettleCheck or 0) >= ASLEEP_RECHECK then
+						entry.lastSettleCheck = now
+						settleStep(model, entry, dt)
+					end
+				else
+					entry.lastSettleCheck = now
+					settleStep(model, entry, dt)
+				end
+			end
+		end
+	end
+end)
 
 --=====================================================================
 -- REQUEST HANDLERS
@@ -507,7 +705,26 @@ local function spawnPointFor(plr)
 	local flat = Vector3.new(look.X, 0, look.Z)
 	flat = (flat.Magnitude > 1e-3) and flat.Unit or Vector3.zAxis
 
-	return CFrame.lookAt(body.Position + flat * 14, body.Position + flat * 28)
+	local ahead = body.Position + flat * 14
+
+	-- Find the GROUND under that point rather than using the spawner's own
+	-- height. body.Position is the centre of the hull, so it is already a
+	-- couple of studs above their feet, and standing on anything raised
+	-- meant the car appeared in mid-air over the ground beside it.
+	--
+	-- Started well above the point, not at it, so a car spawned facing a step
+	-- lands on the step rather than inside it.
+	local params = RaycastParams.new()
+	params.FilterDescendantsInstances = { body, folder() }
+	params.FilterType = Enum.RaycastFilterType.Exclude
+
+	local hit = workspace:Raycast(ahead + Vector3.new(0, 20, 0), Vector3.new(0, -600, 0), params)
+	local ground = hit and hit.Position.Y or body.Position.Y
+
+	local at = Vector3.new(ahead.X, ground, ahead.Z)
+	-- The settle pass catches whatever this gets wrong, so a miss here is a
+	-- short drop rather than a car stuck in the sky.
+	return CFrame.lookAt(at, at + flat * 14)
 end
 
 Config.Command("vehicle_spawn", {
@@ -619,6 +836,7 @@ Config.Command("vehicle_flip", {
 		-- so this lands without any extra plumbing.
 		local _, yaw = chassis.CFrame:ToEulerAnglesYXZ()
 		model:PivotTo(CFrame.new(chassis.Position + Vector3.new(0, 3, 0)) * CFrame.Angles(0, yaw, 0))
+		wake(model)   -- lifted clear; the settle pass puts it back down
 		reply(ctx, "[vehicle] flipped")
 		return true
 	end,

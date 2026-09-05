@@ -202,6 +202,43 @@ function VehicleDefs.List()
 end
 
 --=====================================================================
+-- ORIENTATION
+--=====================================================================
+-- The yaw convention, in ONE place, because it has already been got wrong
+-- once and there are now two callers -- the driving sim and the server's
+-- settle pass.
+--
+-- Roblox's identity CFrame looks down -Z, and LookVector is the NEGATED third
+-- column of the matrix. So CFrame.Angles(0, t, 0).LookVector is
+-- (-sin t, 0, -cos t), and the textbook (sin t, 0, cos t) is that direction
+-- turned 180 degrees. A car built on the textbook version drives out of its
+-- own back bumper -- and steers into the key you did not press, because
+-- Roblox yaw also increases COUNTER-clockwise seen from above.
+
+function VehicleDefs.HeadingFromYaw(yaw)
+	return Vector3.new(-math.sin(yaw), 0, -math.cos(yaw))
+end
+
+-- A CFrame at `position`, facing `yaw`, lying on a surface whose normal is
+-- `up`. Guarded at both degenerate cases: heading parallel to up (a vertical
+-- wall) gives a zero cross product, and a zero cross product gives a CFrame
+-- full of NaN, which does not error -- it renders as nothing and takes the
+-- frame with it.
+function VehicleDefs.OrientCF(position, yaw, up)
+	if not up or up.Magnitude < 1e-3 then up = Vector3.yAxis end
+	up = up.Unit
+
+	local heading = VehicleDefs.HeadingFromYaw(yaw)
+	local right = heading:Cross(up)
+	if right.Magnitude < 1e-3 then right = Vector3.xAxis end
+
+	local look = up:Cross(right.Unit)
+	if look.Magnitude < 1e-3 then look = heading end
+
+	return CFrame.lookAt(position, position + look.Unit, up)
+end
+
+--=====================================================================
 -- WHEEL LAYOUT
 --=====================================================================
 -- Four corners in chassis space, at the bottom of the body. The suspension

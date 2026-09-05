@@ -503,18 +503,11 @@ local function step(s, dt)
 	-- With the wrong sign the car still drives, still steers and still stops
 	-- at a wall -- it simply drives out of its own back bumper, which is very
 	-- easy to stare straight past.
-	local heading = Vector3.new(-math.sin(s.yaw), 0, -math.cos(s.yaw))
 	-- Built from the ground normal so the car lies on a slope rather than
-	-- floating level over it. Guarded because heading and up are parallel on
-	-- a vertical wall, and a zero cross product produces a NaN CFrame.
-	local rightAxis = heading:Cross(s.up)
-	if rightAxis.Magnitude < 1e-3 then
-		rightAxis = Vector3.xAxis
-	end
-	local look = s.up:Cross(rightAxis.Unit)
-	if look.Magnitude < 1e-3 then look = heading end
-
-	s.cf = CFrame.lookAt(pos, pos + look.Unit, s.up)
+	-- floating level over it. The yaw convention and both degenerate cases
+	-- live in VehicleDefs.OrientCF, shared with the server's settle pass --
+	-- one place for a sign that has already been wrong once.
+	s.cf = VehicleDefs.OrientCF(pos, s.yaw, s.up)
 		* CFrame.Angles(math.rad(s.pitchAngle), 0, math.rad(s.rollAngle))
 
 	--------------------------------------------------------------
