@@ -176,6 +176,10 @@ local COMMANDS = {
 	-- press edge for now.
 	["+use"]  = { order = 19, label = "Use / Pick Up",  button = true },
 	["drop"]  = { order = 20, label = "Drop Weapon",    button = false },
+
+	-- Same reasoning as toggleconsole: the menu makes the game modal, so
+	-- without passthrough the key that opened it could not close it.
+	["togglemenu"] = { order = 21, label = "Menu", button = false, modalPassthrough = true },
 }
 
 -- Ordered so bind_defaults and a fresh config write out predictably.
@@ -190,6 +194,7 @@ local DEFAULT_BINDS = {
 	{ "`", "toggleconsole" }, { "f3", "toggleconsole" },
 	{ "v", "thirdperson" }, { "f", "+lookatweapon" },
 	{ "e", "+use" }, { "g", "drop" },
+	{ "f1", "togglemenu" },
 }
 
 local GAMEPAD_DEFAULTS = {
@@ -1055,6 +1060,8 @@ end
 
 -- Mouse delta stays on UserInputService: the action system handles discrete
 -- actions and axes, not raw relative motion.
+local lastMouseDelta = Vector3.zero
+
 local function bindMouseLook()
 	table.insert(conns, UserInputService.InputChanged:Connect(function(input)
 		if modalActive then return end
@@ -1062,8 +1069,23 @@ local function bindMouseLook()
 		if input.UserInputType ~= Enum.UserInputType.MouseMovement then return end
 
 		local sens = Config.sensitivity or 0.2
-		State.cameraX = (State.cameraX or 0) - input.Delta.X * sens
-		State.cameraY = math.clamp((State.cameraY or 0) - input.Delta.Y * sens, -89, 89)
+		local dx, dy = input.Delta.X, input.Delta.Y
+
+		-- HL's mouse filter: this sample averaged with the last one. Held
+		-- whether the filter is on or not, so switching it on mid-game
+		-- averages against a real previous delta rather than against zero --
+		-- which would otherwise halve the first frame's movement.
+		if Config.m_filter then
+			dx = (dx + lastMouseDelta.X) * 0.5
+			dy = (dy + lastMouseDelta.Y) * 0.5
+		end
+		lastMouseDelta = input.Delta
+
+		local pitch = (Config.m_pitch or 1)
+		if Config.m_invert then pitch = -pitch end
+
+		State.cameraX = (State.cameraX or 0) - dx * sens * (Config.m_yaw or 1)
+		State.cameraY = math.clamp((State.cameraY or 0) - dy * sens * pitch, -89, 89)
 	end))
 end
 

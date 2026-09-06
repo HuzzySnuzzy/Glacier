@@ -258,6 +258,26 @@ Define("sv_MaxCatchupSteps", 20, FCVAR.REPLICATED)        -- accumulator clamp; 
 Define("fov", 80, FCVAR.CLIENT)
 Define("sensitivity", 0.2, FCVAR.CLIENT)
 
+-- MOUSE, the Half-Life set. sensitivity above is the overall figure; these are
+-- the per-axis trims that go with it, and they are the options a settings menu
+-- is expected to have.
+Define("m_yaw", 1, FCVAR.CLIENT)          -- horizontal multiplier
+Define("m_pitch", 1, FCVAR.CLIENT)        -- vertical multiplier
+Define("m_invert", false, FCVAR.CLIENT)   -- HL's "Reverse mouse"
+
+-- HL's "Mouse filter": each frame's delta is averaged with the last one.
+--
+-- Off by default and it should stay off for anyone aiming. It exists because
+-- it is the option people look for, and because saying what it does is more
+-- useful than pretending the engine has no opinion: it halves the effect of a
+-- single noisy sample at the cost of half a frame of latency on every real
+-- one.
+--
+-- There is deliberately no "raw input" toggle. Roblox reports mouse movement
+-- as a relative delta with no acceleration or ballistics applied, so raw input
+-- is the only mode there is -- a switch would be a lie either way round.
+Define("m_filter", false, FCVAR.CLIENT)
+
 -- REPLICATED as well as CHEAT: eye height is a wallhack vector, and CHEAT
 -- alone only holds while sv_cheats is 0.
 Define("cl_standingCamHeight", 2, FCVAR.REPLICATED + FCVAR.CHEAT)
