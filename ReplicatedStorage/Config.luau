@@ -822,6 +822,15 @@ Define("cl_vehicle_camfovgain", 14, FCVAR.CLIENT)  -- extra FOV at top speed
 Define("cl_vehicle_freelook", true, FCVAR.CLIENT)  -- mouse orbits instead of steering the camera
 Define("cl_vehicle_debug", false, FCVAR.CLIENT)    -- draw suspension rays and force vectors
 
+-- How often the driver tells the server where their car is. 0 sends every
+-- frame, which is what it used to do.
+--
+-- Twenty is plenty: every receiver draws from an interpolation buffer
+-- cl_interp seconds deep -- 0.1 by default, two whole packets -- so sending
+-- faster than this cannot make anyone's car smoother. It only multiplies the
+-- relay, which is one send per packet per OTHER player.
+Define("cl_vehicle_synchz", 20, FCVAR.CLIENT)
+
 
 --=====================================================================
 -- CONSOLE / SETTER

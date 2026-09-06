@@ -253,7 +253,11 @@ local function spawnVehicle(class, cframe)
 	-- rig.def, because Rig applies the model's attributes to it. Keeping the
 	-- class def here would make the server's idea of the car disagree with
 	-- the driver's the moment anyone tuned one in Studio.
-	vehicles[model] = { def = rig.def, rig = rig, lastSync = 0 }
+	-- cf: the server's authority on where this car is. See poseOf.
+	vehicles[model] = {
+		def = rig.def, rig = rig, lastSync = 0,
+		cf = model:GetPivot(),
+	}
 	return model
 end
 
@@ -282,6 +286,42 @@ local function chassisOf(model)
 	return model and model.PrimaryPart
 end
 
+--=====================================================================
+-- WHERE THE CAR IS
+--=====================================================================
+-- entry.cf is the server's authority, NOT the instance's CFrame.
+--
+-- The chassis is an anchored part the server owns, so every write to it
+-- replicates to every client -- and the driver's client is drawing that same
+-- part from its own sim, every frame. Writing the instance on each sync
+-- packet meant the driver's local pose was overwritten, asynchronously,
+-- twenty to sixty times a second by a pose one round trip old. That is the
+-- car visibly snapping backwards, and -- because the engine Sound hangs off
+-- the chassis -- an emitter teleporting back and forth under the listener,
+-- which is what choppy audio sounds like.
+--
+-- None of it shows in Studio: play-solo has no replication step, so the write
+-- and the local draw are the same assignment to the same DataModel.
+--
+-- So: while a car is DRIVEN the server tracks its pose as a value and leaves
+-- the instance alone. While it is PARKED the settle pass owns the instance
+-- and keeps entry.cf in step, because then there is no client drawing over
+-- it and the world should be right for anything that looks.
+
+local function poseOf(model)
+	local entry = vehicles[model]
+	if entry and entry.cf then return entry.cf end
+	local chassis = chassisOf(model)
+	return chassis and chassis.CFrame
+end
+
+-- Move the actual model, and record it. For everything that is allowed to
+-- move a car the hard way: spawning, settling, flipping.
+local function place(model, entry, cf)
+	if entry then entry.cf = cf end
+	model:PivotTo(cf)
+end
+
 -- Refuses for a stated reason rather than silently: "nothing happened when I
 -- pressed E" is the single most annoying bug class in a use system.
 local function tryEnter(plr, model, seatIndex)
@@ -308,7 +348,11 @@ local function tryEnter(plr, model, seatIndex)
 	-- Measured to the chassis SURFACE, not its centre: a van is seven studs
 	-- wide, and a range measured to the middle of it would mean standing at
 	-- the door is further away than standing at the bumper.
-	local nearest = chassis.CFrame:PointToObjectSpace(puppet:GetPivot().Position)
+	-- poseOf, not chassis.CFrame: while someone is driving, the instance is
+	-- deliberately stale. Measuring range against it would let you climb into
+	-- a moving car from where it was parked.
+	local pose = poseOf(model) or chassis.CFrame
+	local nearest = pose:PointToObjectSpace(puppet:GetPivot().Position)
 	local half = chassis.Size * 0.5
 	local clamped = Vector3.new(
 		math.clamp(nearest.X, -half.X, half.X),
@@ -349,16 +393,27 @@ local function tryExit(plr, forced)
 	-- Placed beside the car rather than inside it. Left for odd seats, right
 	-- for even, so two people leaving at once do not land in each other.
 	local chassis = chassisOf(model)
-	if chassis and Glacier.IsAlive(plr) and not forced then
+	local pose = poseOf(model)
+
+	if chassis and pose and Glacier.IsAlive(plr) and not forced then
 		local clear = Config.Get("sv_vehicle_exitclear") or 4.5
 		local side = (seatIndex % 2 == 1) and -1 or 1
-		local offset = chassis.CFrame.RightVector * (chassis.Size.X * 0.5 + clear) * side
-		Glacier.Move(plr, CFrame.new(chassis.Position + offset + Vector3.new(0, 1, 0)))
+		local offset = pose.RightVector * (chassis.Size.X * 0.5 + clear) * side
+		Glacier.Move(plr, CFrame.new(pose.Position + offset + Vector3.new(0, 1, 0)))
 	end
 
 	-- The driver's sim stops the moment they leave, so whatever the car was
 	-- doing it is now doing nothing. Hand it to the settle pass.
-	if seatIndex == 1 then wake(model) end
+	if seatIndex == 1 then
+		-- The instance catches up HERE, once. It has been left alone for the
+		-- whole drive so as not to fight the driver's own rendering; this is
+		-- the moment that stops being true, and one write now is what makes
+		-- the parked car appear where it was left for everyone -- including
+		-- clients that were never watching it.
+		local entry = vehicles[model]
+		if entry and entry.cf then model:PivotTo(entry.cf) end
+		wake(model)
+	end
 
 	announce(model, plr, seatIndex, false)
 	return true
@@ -477,6 +532,21 @@ local function settleStep(model, entry, dt)
 	local chassis = rig and rig.chassis
 	if not chassis or not chassis.Parent then return end
 
+	-- Worked from entry.cf rather than the instance, so a car that has just
+	-- been driven settles from where the driver left it and not from wherever
+	-- the instance was last written. They agree by the time this runs -- exit
+	-- writes the instance -- but depending on that ordering is how a settle
+	-- pass ends up teleporting a car on the first tick after someone gets out.
+	local pose = entry.cf or chassis.CFrame
+	entry.cf = pose
+
+	-- The ground probes below cast from the INSTANCE, so it has to agree with
+	-- the record before they run. In steady state it already does and this
+	-- writes nothing; the one moment it can differ is the first tick after a
+	-- driver got out, and depending on the exit path having written it first
+	-- is how a settle pass ends up teleporting a car.
+	if chassis.CFrame ~= pose then model:PivotTo(pose) end
+
 	-- Same rule as the driving sim: 0 means follow sv_gravity, so a parked
 	-- car falls at the rate everything else does.
 	local gravity = Config.Get("sv_vehicle_gravity") or 0
@@ -487,10 +557,10 @@ local function settleStep(model, entry, dt)
 		-- Nothing underneath at all. Keep falling rather than hovering at the
 		-- edge of the world: a car pushed off the map should leave.
 		entry.fallSpeed = (entry.fallSpeed or 0) + gravity * dt
-		model:PivotTo(chassis.CFrame - Vector3.new(0, entry.fallSpeed * dt, 0))
+		place(model, entry, pose - Vector3.new(0, entry.fallSpeed * dt, 0))
 		entry.asleep = false
 
-		if chassis.Position.Y < VOID_Y then
+		if entry.cf.Position.Y < VOID_Y then
 			local driver = driverOf(model)
 			if driver then Glacier.Tell(driver, "[vehicle] your car left the world", true) end
 			removeVehicle(model)
@@ -503,7 +573,7 @@ local function settleStep(model, entry, dt)
 		-- Clamped to the gap so it lands ON the ground rather than through it.
 		-- No sweep is needed for that: the gap IS the distance to contact.
 		local drop = math.min(entry.fallSpeed * dt, gap)
-		model:PivotTo(chassis.CFrame - Vector3.new(0, drop, 0))
+		place(model, entry, pose - Vector3.new(0, drop, 0))
 		entry.asleep = false
 		return
 	end
@@ -511,7 +581,7 @@ local function settleStep(model, entry, dt)
 	if gap < -REST_EPSILON then
 		-- Embedded -- spawned inside a ramp, or the ground moved up under it.
 		-- Pushed straight out, no bounce; gap is negative, so this lifts.
-		model:PivotTo(chassis.CFrame - Vector3.new(0, gap, 0))
+		place(model, entry, pose - Vector3.new(0, gap, 0))
 		entry.fallSpeed = 0
 		entry.asleep = false
 		return
@@ -519,8 +589,8 @@ local function settleStep(model, entry, dt)
 
 	-- Resting. Level onto the surface, keeping yaw, and stop.
 	entry.fallSpeed = 0
-	local _, yaw = chassis.CFrame:ToEulerAnglesYXZ()
-	model:PivotTo(VehicleDefs.OrientCF(chassis.Position, yaw, normal))
+	local _, yaw = pose:ToEulerAnglesYXZ()
+	place(model, entry, VehicleDefs.OrientCF(pose.Position, yaw, normal))
 	entry.asleep = true
 end
 
@@ -619,25 +689,41 @@ local function sane(cf)
 		and math.abs(p.Z) < WORLD_LIMIT
 end
 
-VehicleSync.OnServerEvent:Connect(function(plr, packet)
-	if type(packet) ~= "table" then return end
+-- Split out of the event handler, which is where code goes to stop being
+-- reachable: the bug this file's last fix was about lived in here and only
+-- showed on a real network, because nothing could call it without one.
+--
+-- Returns the model when the packet was accepted, so the caller knows whether
+-- there is anything to relay.
+local function applySync(plr, packet)
+	if type(packet) ~= "table" then return nil end
 
 	local model = packet.vehicle
-	if typeof(model) ~= "Instance" or not model:IsA("Model") then return end
+	if typeof(model) ~= "Instance" or not model:IsA("Model") then return nil end
 
 	local entry = vehicles[model]
-	if not entry then return end
-	if driverOf(model) ~= plr then return end
-	if not sane(packet.cf) then return end
+	if not entry then return nil end
+	if driverOf(model) ~= plr then return nil end
+	if not sane(packet.cf) then return nil end
 
 	entry.lastSync = os.clock()
 
-	-- Written on the server so late joiners, range checks and anything else
-	-- reading the world get the real position. Every client overrides this
-	-- locally each frame -- the driver from its own sim, everyone else from
-	-- the interpolation buffer -- so the replicated write is a floor, not a
-	-- fight.
-	model:PivotTo(packet.cf)
+	-- RECORDED, NOT WRITTEN. See poseOf.
+	--
+	-- This used to PivotTo the model, on the reasoning that every client
+	-- overrides it locally each frame anyway, so the replicated write was "a
+	-- floor, not a fight". That is wrong on a real network: replication is
+	-- asynchronous, so the stale pose lands BETWEEN the client's frames and
+	-- is visibly drawn -- the car snapping backwards, and the chassis-mounted
+	-- engine sound snapping with it. The instance catches up when the driver
+	-- gets out, which is the moment it stops being contested.
+	entry.cf = packet.cf
+	return model
+end
+
+VehicleSync.OnServerEvent:Connect(function(plr, packet)
+	local model = applySync(plr, packet)
+	if not model then return end
 
 	-- Relayed to everyone EXCEPT the sender: they already have it, a frame
 	-- earlier and without the round trip.
@@ -783,7 +869,8 @@ Config.Command("vehicle_remove", {
 			for candidate in pairs(vehicles) do
 				local chassis = chassisOf(candidate)
 				if chassis then
-					local d = (chassis.Position - origin).Magnitude
+					local pose = poseOf(candidate) or chassis.CFrame
+					local d = (pose.Position - origin).Magnitude
 					if not bestDist or d < bestDist then best, bestDist = candidate, d end
 				end
 			end
@@ -828,7 +915,9 @@ Config.Command("vehicle_list", {
 			table.insert(lines, ("  %-18s %s  %s"):format(
 				model.Name,
 				chassis and ("(%.0f %.0f %.0f)"):format(
-					chassis.Position.X, chassis.Position.Y, chassis.Position.Z) or "(no chassis)",
+					(poseOf(model) or chassis.CFrame).Position.X,
+					(poseOf(model) or chassis.CFrame).Position.Y,
+					(poseOf(model) or chassis.CFrame).Position.Z) or "(no chassis)",
 				(#occupants > 0) and table.concat(occupants, " ") or "empty"))
 		end
 
@@ -858,8 +947,14 @@ Config.Command("vehicle_flip", {
 		-- Yaw kept, pitch and roll discarded, lifted clear of whatever it is
 		-- lying on. The driver's sim reads the chassis back on its next step,
 		-- so this lands without any extra plumbing.
-		local _, yaw = chassis.CFrame:ToEulerAnglesYXZ()
-		model:PivotTo(CFrame.new(chassis.Position + Vector3.new(0, 3, 0)) * CFrame.Angles(0, yaw, 0))
+		-- Through place, so the record follows the model. Flipping a car
+		-- somebody is driving would fight their sim -- which is why wake
+		-- below hands it to the settle pass, and why the driver is told.
+		local entry = vehicles[model]
+		local pose = poseOf(model) or chassis.CFrame
+		local _, yaw = pose:ToEulerAnglesYXZ()
+		place(model, entry,
+			CFrame.new(pose.Position + Vector3.new(0, 3, 0)) * CFrame.Angles(0, yaw, 0))
 		wake(model)   -- lifted clear; the settle pass puts it back down
 		reply(ctx, "[vehicle] flipped")
 		return true
@@ -877,7 +972,8 @@ Config.Command("vehicle_rig", {
 		for model in pairs(vehicles) do
 			local chassis = chassisOf(model)
 			if chassis then
-				local d = origin and (chassis.Position - origin).Magnitude or 0
+				local pose = poseOf(model) or chassis.CFrame
+				local d = origin and (pose.Position - origin).Magnitude or 0
 				if not bestDist or d < bestDist then best, bestDist = model, d end
 			end
 		end

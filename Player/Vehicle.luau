@@ -995,8 +995,21 @@ local function step(s, dt)
 	--------------------------------------------------------------
 	-- Spin rate from the FRONT wheel's real radius: a bigger wheel turns
 	-- slower for the same road speed, which is visible at a glance.
+	-- NEGATIVE, and this is the sign the wheels are actually drawn with.
+	--
+	-- drawWheels applies the spin as CFrame.Angles(spin, 0, 0) about the
+	-- wheel's own X, which is its axle. Roblox rotations are counter-clockwise
+	-- about the axis, and the wheel's +X points to the car's RIGHT -- so a
+	-- positive angle rolls the tread forward over the top and backward at the
+	-- contact patch, which is a car driving forwards with its wheels spinning
+	-- in reverse.
+	--
+	-- Flipped here rather than at the draw because wheelSpin goes over the
+	-- wire: correcting it in drawWheels would fix the driver's car and leave
+	-- every observed one turning the wrong way, since they draw from the
+	-- synced number through the same function.
 	local spinRadius = s.rig.wheels[1] and s.rig.wheels[1].radius or def.wheelRadius
-	s.wheelSpin = (s.wheelSpin or 0) + (roadSpeed / math.max(spinRadius, 0.1)) * dt
+	s.wheelSpin = (s.wheelSpin or 0) - (roadSpeed / math.max(spinRadius, 0.1)) * dt
 	s.contacts = contacts
 	s.deepest = deepest
 	s.lastHit = hit
@@ -1579,8 +1592,24 @@ end
 
 -- Fired on Heartbeat, not per frame: the server relays to everyone else and
 -- there is no point sending faster than they can receive.
+-- Rate limited, and NOT to the frame rate.
+--
+-- It ran on Heartbeat, so a driver sent sixty packets a second, each of which
+-- the server relays to every other player -- the cost is one send times the
+-- whole server, sixty times a second, to feed receivers who interpolate
+-- behind a cl_interp buffer an order of magnitude longer than the gap between
+-- packets. Nobody can see the difference and everybody pays for it.
+local lastSyncAt = 0
+
 function Vehicle.Sync()
 	if not sim then return end
+
+	local hz = num(Config.cl_vehicle_synchz, 20)
+	if hz > 0 then
+		local now = os.clock()
+		if now - lastSyncAt < 1 / hz then return end
+		lastSyncAt = now
+	end
 
 	local send = remote("VehicleSync")
 	if not send then return end
