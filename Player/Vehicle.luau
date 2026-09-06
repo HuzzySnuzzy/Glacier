@@ -932,8 +932,18 @@ local function step(s, dt)
 	-- overshoot is the whole of what "springy" means. Under-damped on purpose.
 	-- Published because they are what the spring is chasing, which is worth
 	-- having on the HUD when tuning the body.
-	s.rollTarget = -lateralG * def.bodyRoll
-	s.pitchTarget = -longG * def.bodyPitch
+	--
+	-- SIGNS, and they were both backwards. A positive roll drops the car's
+	-- LEFT side and a positive pitch lifts its NOSE -- see the same paragraph
+	-- in VehicleDefs.AxleLean, which is the other thing writing these angles.
+	--
+	-- Load goes to the OUTBOARD side of a corner and that side drops, so a
+	-- right-hand turn -- tyre force toward +right, lateralG positive -- leans
+	-- the body left. Weight goes BACKWARDS under power, so the nose rises.
+	-- Negated, this was a car that leaned into its corners like a motorcycle
+	-- and dived under acceleration.
+	s.rollTarget = lateralG * def.bodyRoll
+	s.pitchTarget = longG * def.bodyPitch
 
 	s.rollAngle, s.rollRate = dampedSpring(s.rollAngle or 0, s.rollRate or 0,
 		s.rollTarget, def.bodyHz, def.bodyDamp, dt)

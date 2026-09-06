@@ -501,8 +501,28 @@ function VehicleDefs.AxleLean(def, wheels, wheelbase)
 	local base = math.max(wheelbase or def.size.Z, 0.5)
 
 	local scale = def.terrainLean or 1
+
+	-- SIGNS. Both are stated as what the body DOES, because working them back
+	-- from Roblox's rotation conventions is how this engine has now got a sign
+	-- wrong four separate times.
+	--
+	-- The angles are applied as CFrame.Angles(pitch, 0, roll) on the chassis
+	-- frame, where +X is the car's right and forward is -Z. A positive roll
+	-- carries +X toward +Y, so it lifts the RIGHT side; a positive pitch
+	-- carries -Z toward +Y, so it lifts the NOSE.
+	--
+	-- More travel at a corner means the ground is further away there, so that
+	-- corner's end of the body should drop toward it:
+	--
+	--   left wheels extended  -> the left side goes down -> right side up
+	--                         -> POSITIVE roll   (left minus right)
+	--   front wheels extended -> the nose goes down
+	--                         -> NEGATIVE pitch  (rear minus front)
+	--
+	-- The rig harness asserts both by measuring where a point on the body
+	-- actually ends up, rather than by restating this paragraph.
 	local roll = math.deg(math.atan(
-		(mean(rightSum, rightCount) - mean(leftSum, leftCount)) / track)) * scale
+		(mean(leftSum, leftCount) - mean(rightSum, rightCount)) / track)) * scale
 	local pitch = math.deg(math.atan(
 		(mean(rearSum, rearCount) - mean(frontSum, frontCount)) / base)) * scale
 
