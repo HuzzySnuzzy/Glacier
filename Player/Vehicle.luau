@@ -952,6 +952,39 @@ local function step(s, dt)
 	s.rollAngle, s.rollRate = bound(s.rollAngle, s.rollRate, BODY_ANGLE_LIMIT)
 	s.pitchAngle, s.pitchRate = bound(s.pitchAngle, s.pitchRate, BODY_ANGLE_LIMIT)
 
+	-- THE LEAN THE WHEELS ARE ASKING FOR, on top of the load transfer above.
+	--
+	-- The chassis lies along the suspension NORMAL, which handles a slope and
+	-- is blind to a kerb: a kerb and the road beside it both point straight
+	-- up, so the normals agree while the heights do not. That is why the body
+	-- sat dead level with one pair of wheels a stud higher than the other.
+	-- This reads the heights instead -- see VehicleDefs.AxleLean.
+	--
+	-- Read from the DRAWN travel, which the render pass maintains, so the
+	-- body and the wheels are describing the same suspension rather than two
+	-- versions of it. That is a frame behind; on a decoration, invisible.
+	--
+	-- Its own spring, firmer and better damped than the load transfer: a body
+	-- following the ground should look attached to it, and the loose,
+	-- overshooting one next door is what makes cornering feel heavy. Sharing
+	-- a spring would make it one or the other.
+	local axleRollTarget, axlePitchTarget = VehicleDefs.AxleLean(def, s.rig.wheels, s.rig.wheelbase)
+
+	s.axleRoll, s.axleRollRate = dampedSpring(s.axleRoll or 0, s.axleRollRate or 0,
+		axleRollTarget, def.bodyHz * 1.6, 0.75, dt)
+	s.axlePitch, s.axlePitchRate = dampedSpring(s.axlePitch or 0, s.axlePitchRate or 0,
+		axlePitchTarget, def.bodyHz * 1.6, 0.75, dt)
+
+	s.axleRoll, s.axleRollRate = bound(s.axleRoll, s.axleRollRate, BODY_ANGLE_LIMIT)
+	s.axlePitch, s.axlePitchRate = bound(s.axlePitch, s.axlePitchRate, BODY_ANGLE_LIMIT)
+
+	-- What is actually DRAWN, and what goes over the wire. The two leans are
+	-- kept apart above because they are different springs; from here on they
+	-- are one number, and the receiver undoes exactly this to recover the
+	-- physics frame its wheels belong in.
+	s.rollDrawn = s.rollAngle + s.axleRoll
+	s.pitchDrawn = s.pitchAngle + s.axlePitch
+
 	-- Slower than it was: the shell should look like it is catching up with
 	-- the ground rather than welded to it.
 	s.up = approach(s.up or targetUp, targetUp, 6, dt)
@@ -1040,14 +1073,14 @@ local function step(s, dt)
 
 	-- Built last, from the finished physics frame. Everything downstream that
 	-- DRAWS reads this; everything that simulates reads s.cf.
-	s.renderCf = s.cf * CFrame.Angles(math.rad(s.pitchAngle), 0, math.rad(s.rollAngle))
+	s.renderCf = s.cf * CFrame.Angles(math.rad(s.pitchDrawn), 0, math.rad(s.rollDrawn))
 end
 
 --=====================================================================
 -- DRAWING
 --=====================================================================
 
-local function drawWheels(rig, cf, steer, spin, contacts)
+local function drawWheels(rig, cf, steer, spin, contacts, dt)
 	if not rig then return end
 	local def = rig.def
 
@@ -1057,7 +1090,13 @@ local function drawWheels(rig, cf, steer, spin, contacts)
 			-- Drawn relative to its REST position, so a car sitting still puts
 			-- its wheels exactly where the model put them and travel is a
 			-- deviation from that rather than an offset baked into it.
-			local travel = VehicleDefs.WheelOffset(def, wheel, contacts and contacts[i])
+			--
+			-- WheelTravel, not WheelOffset: the offset is where the ray says
+			-- the wheel should be, and a wheel does not get there instantly.
+			-- `contacts` present means we know which wheels are airborne;
+			-- absent means we were told nothing, which is not the same thing.
+			local travel = VehicleDefs.WheelTravel(
+				def, wheel, contacts and contacts[i], dt, contacts ~= nil)
 
 			-- Steer about the CHASSIS up axis, before the wheel's own rotation.
 			-- Front axle only, which is what rig.front is for.
@@ -1459,7 +1498,7 @@ local function pushObserved(packet)
 	while #list > MAX_SNAPSHOTS do table.remove(list, 1) end
 end
 
-local function drawObserved()
+local function drawObserved(deltaTime)
 	local interp = num(Config.cl_interp, 0.1)
 	local now = workspace:GetServerTimeNow()
 	local renderAt = now - interp
@@ -1507,7 +1546,11 @@ local function drawObserved()
 				-- back -- and someone else's car then has its wheels flat on
 				-- the road exactly like your own.
 				local flat = cf * CFrame.Angles(math.rad(-pitch), 0, math.rad(-roll))
-				drawWheels(entry.rig, flat, steer, spin, nil)
+				-- No contacts over the wire, so the wheels ease toward rest
+				-- rather than being told they are airborne. deltaTime so
+				-- somebody else's car has the same unhurried suspension as
+				-- your own rather than snapping between packets.
+				drawWheels(entry.rig, flat, steer, spin, nil, deltaTime)
 
 				-- Someone else's car gets the same treatment from the same
 				-- code. The gear is what triggers a backfire, and comparing
@@ -1548,7 +1591,7 @@ end
 -- over. When it has, Physics must not run: two things writing the RawBody in
 -- the same frame is exactly the fight this avoids.
 function Vehicle.Update(deltaTime)
-	drawObserved()
+	drawObserved(deltaTime)
 
 	-- Before the seated early-out, so a +use on foot next to a car is caught
 	-- here. Weapons runs later in the frame and picks up whatever survives,
@@ -1606,7 +1649,7 @@ function Vehicle.Update(deltaTime)
 		-- body leans and the wheels stay flat on the road. That is what "the
 		-- wheels look stuck onto the chassis" was -- the travel was working
 		-- the whole time, but every wheel was leaning with the shell.
-		drawWheels(rig, physicsCf, sim.steer, sim.wheelSpin, sim.contacts)
+		drawWheels(rig, physicsCf, sim.steer, sim.wheelSpin, sim.contacts, deltaTime)
 
 		-- Everything you can hear or see but that does not move the car. Fed
 		-- the sim's own numbers; it publishes nothing back.
@@ -1668,8 +1711,8 @@ function Vehicle.Sync()
 		-- draw the wheels flat on the road. Two numbers is cheaper than a
 		-- second CFrame and exact, since the render frame is just the
 		-- physics one with these applied.
-		roll = sim.rollAngle,
-		pitch = sim.pitchAngle,
+		roll = sim.rollDrawn,
+		pitch = sim.pitchDrawn,
 		rpm = sim.rpm,
 		gear = sim.gear,
 		spool = sim.spool,

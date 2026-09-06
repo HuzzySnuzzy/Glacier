@@ -86,6 +86,30 @@ local DEFAULTS = {
 	springHz     = 1.5,       -- undamped natural frequency of the springs
 	springDamp   = 0.28,      -- 1 is critical; under it the car breathes
 
+	-- HOW FAST THE WHEEL ITSELF MOVES, drawn. Not the same thing as the
+	-- spring above, which is what holds the CAR up.
+	--
+	-- The two rates are deliberately different, and the difference is the
+	-- whole point. A bump drives the wheel up hard and fast -- the road is
+	-- doing it, and the road wins. Coming back down, nothing is pushing but
+	-- the spring against the weight of the wheel, so it extends and it takes
+	-- its time. A wheel that dropped into a hole instantly is a wheel with no
+	-- mass and no spring, which is what it looked like.
+	wheelCompressRate = 22,
+	wheelExtendRate   = 7,
+
+	-- How much of the ground's unevenness reaches the BODY.
+	--
+	-- The suspension normal already handles a slope -- all four wheels
+	-- compress equally and the whole car tilts. What it cannot see is one
+	-- side being higher than the other, because a kerb and the road beside it
+	-- both point straight up: the normals agree while the heights do not.
+	-- That is why the shell sat dead level with one pair of wheels on a kerb.
+	--
+	-- Below 1 because a car body is not rigidly bolted to its axles. 1 would
+	-- be a go-kart.
+	terrainLean  = 0.8,
+
 	wheelRadius  = 1.1,
 	wheelWidth   = 0.7,
 
@@ -391,6 +415,98 @@ function VehicleDefs.WheelOffset(def, wheel, contact)
 	local ground = wheel.ground or wheel.radius
 	local drop = math.clamp(contact.distance - ground, 0, def.suspension)
 	return drop - restDrop
+end
+
+-- Where the wheel is DRAWN, easing toward where the ray says it should be.
+--
+-- WheelOffset above is the target and nothing more: it is a pure function of
+-- this frame's raycast, so a wheel reaching a kerb or leaving a ledge snapped
+-- to its new position in a single frame. Nothing on a car moves like that.
+-- A wheel has mass and a spring holding it, and both take time.
+--
+-- Asymmetric on purpose -- see wheelCompressRate. Up is the road shoving; down
+-- is a spring pushing a wheel it is barely strong enough to move.
+--
+-- `contacts` present but this wheel missing from it means AIRBORNE, and an
+-- airborne wheel hangs at full droop. `contacts` absent entirely means we have
+-- no information -- an observed car, drawn from a packet that does not carry
+-- them -- and the honest answer there is the rest position, not full droop:
+-- guessing droop would leave every other player's car with its wheels hanging.
+function VehicleDefs.WheelTravel(def, wheel, contact, dt, known)
+	local target
+	if contact then
+		target = VehicleDefs.WheelOffset(def, wheel, contact)
+	elseif known then
+		target = def.suspension * VehicleDefs.RestCompression   -- full droop
+	else
+		target = 0
+	end
+
+	local current = wheel.travel
+	if current == nil or not dt or dt <= 0 then
+		wheel.travel = target
+		return target
+	end
+
+	local rate = (target > current)
+		and (def.wheelExtendRate or 7)      -- dropping away from the body
+		or (def.wheelCompressRate or 22)    -- being pushed up into it
+
+	wheel.travel = current + (target - current) * math.clamp(rate * dt, 0, 1)
+	return wheel.travel
+end
+
+-- The lean the WHEELS are asking the body for, in degrees, as roll and pitch.
+--
+-- Measured from how far each corner's suspension has moved, not from the
+-- surface normals: a kerb and the road beside it both point straight up, so
+-- the normals agree while the heights do not. Reading the normals is why a
+-- car with two wheels up a kerb sat perfectly level.
+--
+-- Returns 0, 0 on a uniform slope, which is correct and not a coincidence:
+-- all four wheels compress the same amount there, and the tilt is already
+-- handled by the chassis lying along the surface normal. This is only ever
+-- the DIFFERENCE between corners -- the articulation.
+function VehicleDefs.AxleLean(def, wheels, wheelbase)
+	local frontSum, frontCount, rearSum, rearCount = 0, 0, 0, 0
+	local leftSum, leftCount, rightSum, rightCount = 0, 0, 0, 0
+
+	for _, wheel in ipairs(wheels) do
+		local travel = wheel.travel or 0
+
+		if wheel.front then
+			frontSum, frontCount = frontSum + travel, frontCount + 1
+		else
+			rearSum, rearCount = rearSum + travel, rearCount + 1
+		end
+
+		-- Local +X is the car's right.
+		if wheel.rest.X < 0 then
+			leftSum, leftCount = leftSum + travel, leftCount + 1
+		else
+			rightSum, rightCount = rightSum + travel, rightCount + 1
+		end
+	end
+
+	local function mean(sum, count) return count > 0 and sum / count or 0 end
+
+	-- Divided by the distance between the corners, because the same height
+	-- difference is a far bigger angle on a narrow car than a wide one --
+	-- that is what makes this an angle rather than a number that happens to
+	-- look right on the vehicle it was tuned against.
+	local track = math.max(def.size.X, 0.5)
+	-- The rig's measured wheelbase when there is one; the box's length is the
+	-- fallback, and it is only ever a fallback -- a car whose wheels are not
+	-- at its corners would get the wrong angle from it.
+	local base = math.max(wheelbase or def.size.Z, 0.5)
+
+	local scale = def.terrainLean or 1
+	local roll = math.deg(math.atan(
+		(mean(rightSum, rightCount) - mean(leftSum, leftCount)) / track)) * scale
+	local pitch = math.deg(math.atan(
+		(mean(rearSum, rearCount) - mean(frontSum, frontCount)) / base)) * scale
+
+	return roll, pitch
 end
 
 -- Every BasePart a wheel is built from -- the one the sim measures first, then
@@ -882,6 +998,9 @@ local ATTRIBUTE_ALIASES = {
 	TurboSpoolDown = "turboSpoolDown",
 	TurboOnset    = "turboOnset",
 	BOVSpool      = "bovSpool",
+	TerrainLean   = "terrainLean",
+	WheelCompressRate = "wheelCompressRate",
+	WheelExtendRate = "wheelExtendRate",
 	Redline       = "redlineRpm",
 	RevLimit      = "redlineRpm",
 	Idle          = "idleRpm",
