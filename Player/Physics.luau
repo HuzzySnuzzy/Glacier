@@ -1333,8 +1333,9 @@ function Physics.Step(deltaTime)
 	--------------------------------------------------------------
 	-- 9. COMMIT
 	--------------------------------------------------------------
-	if pos.Y < -100 then
-		pos = workspace.SpawnLocation.Position + Vector3.new(0, 10, 0)
+	if pos.Y < -500 then
+		local remote = ReplicatedStorage:FindFirstChild("FallDamage")
+		if remote then remote:FireServer(80) end
 		vel = Vector3.zero
 	end
 

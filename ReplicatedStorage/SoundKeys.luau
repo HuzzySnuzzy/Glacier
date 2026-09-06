@@ -25,12 +25,18 @@ SoundKeys.Defs = {
 	fire_USP = { ids = {"rbxassetid://118438076092471"}, volume = 0.85, range = 250 },
 	fire_Knife = { ids = {"rbxassetid://118786671060829"}, volume = 0.85, range = 50 },
 	fire_glock = { ids = {"rbxassetid://139943212269145"}, volume = 0.85, range = 300 },
+	fire_Non = { ids = {"rbxassetid://118786671060829"}, volume = 0.85, range = 150 },
+	fire_flintlock = { ids = {"rbxassetid://130315587754040"}, volume = 0.85, range = 250 },
+	fire_hellock = { ids = {"rbxassetid://130315587754040"}, volume = 0.85, range = 250 },
+	fire_negev = { ids = {"rbxassetid://1112852139"}, volume = 0.85, range = 250 },
 	
 	reload_ak47 = { ids = {"rbxassetid://132828889771041"}, volume = 0.85, range = 55 },
 	reload_M4A1 = { ids = {"rbxassetid://138089881272812"}, volume = 0.85, range = 55 },
 	reload_USP = { ids = {"rbxassetid://3603370582"}, volume = 0.85, range = 55 },
 	reload_Knife = { ids = {"rbxassetid://118786671060829"}, volume = 0.85, range = 50 },
 	reload_glock = { ids = {"rbxassetid://5445945972"}, volume = 0.85, range = 55 },
+	
+	inspect_Non = { ids = {"rbxassetid://134342749421977"}, volume = 0.85, range = 150 },
 }
 
 -- Material -> step key. Anything unlisted falls back to step_default.
