@@ -16,9 +16,21 @@
 --   Chassis/Engine          Sound   looped, pitched from rpm
 --   Chassis/Backfire        Sound   one shot on a backfire
 --   Chassis/TireScreech     Sound   looped, volume and pitch from slip
+--   Chassis/TurboSpool      Sound   looped, volume and pitch from boost
+--   Chassis/BOV             Sound   one shot when the valve vents
+--   Chassis/EngineStart     Sound   one shot when a driver gets in
 --   Exhaust/Backfire        ParticleEmitter   burst on an upshift
+--   Exhaust/BackfireSmoke   ParticleEmitter   the cloud the flame leaves
 --   Exhaust/Smoke           ParticleEmitter   idle haze, thicker under power
 --   Wheels/<wheel>/Smoke    ParticleEmitter   per wheel, on slip or lock-up
+--
+-- EVERY Exhaust, not the first one. A car with twin pipes has two of them,
+-- and firing only one is worse than firing none -- it reads as a broken
+-- exhaust rather than as a stylistic choice.
+--
+-- THE TURBO is off unless the model says Turbo = true. Spool and the valve
+-- are the two most recognisable noises a car can make, so putting them on
+-- everything would make them mean nothing.
 --
 -- Names are matched anywhere in the subtree, not just on the top level: a
 -- wheel here is a transparent cylinder with a detailed rim inside it, and an
@@ -52,18 +64,27 @@ local VehicleFX = {}
 --
 -- Shallowest match wins, so a Smoke on the wheel itself still beats one on
 -- some decoration inside it.
-local function findByName(parent, needle, className)
+-- `reject` excludes a name that would otherwise match. It exists because
+-- matching by containment makes "smoke" find "BackfireSmoke", and which of
+-- the two you get comes down to the order Studio happens to list them in --
+-- so the idle haze and the backfire cloud would swap places at random.
+local function findByName(parent, needle, className, reject)
 	if not parent then return nil end
 	local lower = string.lower(needle)
 
-	for _, child in ipairs(parent:GetChildren()) do
-		if child:IsA(className) and string.find(string.lower(child.Name), lower, 1, true) then
-			return child
-		end
+	local function matches(child)
+		if not child:IsA(className) then return false end
+		local name = string.lower(child.Name)
+		if reject and string.find(name, reject, 1, true) then return false end
+		return string.find(name, lower, 1, true) ~= nil
 	end
 
 	for _, child in ipairs(parent:GetChildren()) do
-		local found = findByName(child, needle, className)
+		if matches(child) then return child end
+	end
+
+	for _, child in ipairs(parent:GetChildren()) do
+		local found = findByName(child, needle, className, reject)
 		if found then return found end
 	end
 	return nil
@@ -93,9 +114,23 @@ local function fxOf(model, rig)
 	if rig.fx then return rig.fx end
 
 	local chassis = rig.chassis
-	local exhaust = model:FindFirstChild("Exhaust")
-
 	local audio = model:FindFirstChild("Chassis") or chassis
+
+	-- ALL of them. FindFirstChild took the first and left the second silent,
+	-- which on a twin-pipe car reads as one of them being broken.
+	local exhausts = {}
+	for _, child in ipairs(model:GetChildren()) do
+		if string.find(string.lower(child.Name), "exhaust", 1, true) then
+			table.insert(exhausts, {
+				backfire = findByName(child, "backfire", "ParticleEmitter"),
+				-- "backfiresmoke" FIRST, then plain smoke: findByName matches by
+				-- containment, so searching for "smoke" would happily return
+				-- the backfire cloud and leave the idle haze unfound.
+				smoke = findByName(child, "smoke", "ParticleEmitter", "backfire"),
+				backfireSmoke = findByName(child, "backfiresmoke", "ParticleEmitter"),
+			})
+		end
+	end
 
 	local fx = {
 		engine = findByName(audio, "engine", "Sound")
@@ -112,8 +147,17 @@ local function fxOf(model, rig)
 		backfireSound = findByName(audio, "backfire", "Sound")
 			or findByName(chassis, "backfire", "Sound"),
 
-		backfire = findByName(exhaust, "backfire", "ParticleEmitter"),
-		exhaust = findByName(exhaust, "smoke", "ParticleEmitter"),
+		turboSpool = findByName(audio, "turbospool", "Sound")
+			or findByName(audio, "spool", "Sound"),
+		bov = findByName(audio, "bov", "Sound")
+			or findByName(audio, "blowoff", "Sound"),
+
+		-- "start" rather than "engine", or it would match the engine loop --
+		-- which sits beside it and is what the misspelling in this model
+		-- ("EgineStart") would otherwise fall back to.
+		engineStart = findByName(audio, "start", "Sound"),
+
+		exhausts = exhausts,
 		wheelSmoke = {},
 	}
 
@@ -127,7 +171,15 @@ local function fxOf(model, rig)
 	-- The rates the artist set are the loud end; everything below scales
 	-- toward zero from them, so tuning the look stays in Studio.
 	fx.baseRates = {}
-	if fx.exhaust then fx.baseRates.exhaust = rememberedRate(fx.exhaust) end
+
+	-- Per pipe, since two exhausts can be authored at different rates and
+	-- averaging them would make the quieter one wrong in both directions.
+	for _, pipe in ipairs(fx.exhausts) do
+		pipe.baseSmoke = pipe.smoke and rememberedRate(pipe.smoke) or 0
+		pipe.baseBackfire = pipe.backfire and rememberedRate(pipe.backfire) or 0
+		pipe.baseBackfireSmoke = pipe.backfireSmoke
+			and rememberedRate(pipe.backfireSmoke) or 0
+	end
 
 	-- The screech is a LOOP whose volume is the effect, so the artist's volume
 	-- is the loud end the same way their Rate is. Captured before anything
@@ -155,7 +207,19 @@ local function fxOf(model, rig)
 		fx.screechPitch = fx.screech.PlaybackSpeed
 		fx.screech.Volume = 0
 	end
-	if fx.backfire then fx.baseRates.backfire = rememberedRate(fx.backfire) end
+	-- The spool is a LOOP whose volume is the effect, exactly like the
+	-- screech, so the artist's volume is its loud end.
+	if fx.turboSpool then
+		local saved = fx.turboSpool:GetAttribute("FXBaseVolume")
+		if saved == nil then
+			saved = fx.turboSpool.Volume
+			fx.turboSpool:SetAttribute("FXBaseVolume", saved)
+		end
+		fx.spoolVolume = saved
+		fx.spoolPitch = fx.turboSpool.PlaybackSpeed
+		fx.turboSpool.Volume = 0
+	end
+
 	for i, emitter in pairs(fx.wheelSmoke) do
 		fx.baseRates[i] = rememberedRate(emitter)
 	end
@@ -163,8 +227,11 @@ local function fxOf(model, rig)
 	-- Emitters are switched off to begin with. An artist leaves them enabled
 	-- so they can see them while building, and a car should not arrive
 	-- smoking from all four corners.
-	if fx.exhaust then fx.exhaust.Rate = 0 end
-	if fx.backfire then fx.backfire.Rate = 0 end
+	for _, pipe in ipairs(fx.exhausts) do
+		if pipe.smoke then pipe.smoke.Rate = 0 end
+		if pipe.backfire then pipe.backfire.Rate = 0 end
+		if pipe.backfireSmoke then pipe.backfireSmoke.Rate = 0 end
+	end
 	for _, emitter in pairs(fx.wheelSmoke) do emitter.Rate = 0 end
 
 	rig.fx = fx
@@ -242,9 +309,23 @@ function VehicleFX.Update(model, rig, state, deltaTime)
 	--------------------------------------------------------------
 	-- A BURST, not a rate. The emitter is left at zero and given a one-shot
 	-- of particles, which is what a backfire is -- a crack, not a plume.
-	if fx.backfire and state.backfired then
-		local count = math.clamp(math.floor((base.backfire or 12) * 0.5), 4, 40)
-		fx.backfire:Emit(count)
+	--
+	-- Every pipe, together. A twin-pipe car that flamed out of one side would
+	-- read as a fault rather than as a feature.
+	if state.backfired then
+		for _, pipe in ipairs(fx.exhausts) do
+			if pipe.backfire then
+				pipe.backfire:Emit(
+					math.clamp(math.floor(pipe.baseBackfire * 0.5), 4, 40))
+			end
+			-- The cloud the flame leaves behind: more particles than the
+			-- flame and no brighter, which is what makes a bang read as a
+			-- bang rather than as a sparkle.
+			if pipe.backfireSmoke then
+				pipe.backfireSmoke:Emit(
+					math.clamp(math.floor(pipe.baseBackfireSmoke * 0.8), 6, 60))
+			end
+		end
 	end
 
 	-- The crack. Rewound rather than just played, because a second shift
@@ -261,12 +342,51 @@ function VehicleFX.Update(model, rig, state, deltaTime)
 	--------------------------------------------------------------
 	-- Idles gently and thickens under load. Scaled off the rate the artist
 	-- set, so the character of it stays theirs.
-	if fx.exhaust then
+	do
 		local throttle = math.clamp(state.throttle or 0, 0, 1)
 		local revs = math.clamp(((state.rpm or def.idleRpm) - def.idleRpm)
 			/ math.max(def.redlineRpm - def.idleRpm, 1), 0, 1)
 		local load = math.clamp(0.25 + throttle * 0.5 + revs * 0.5, 0, 1)
-		fx.exhaust.Rate = (base.exhaust or 6) * load
+
+		for _, pipe in ipairs(fx.exhausts) do
+			if pipe.smoke then pipe.smoke.Rate = pipe.baseSmoke * load end
+		end
+	end
+
+	--------------------------------------------------------------
+	-- TURBO
+	--------------------------------------------------------------
+	-- Both of these are gated on the car HAVING a turbo, not merely on the
+	-- sounds existing: state.spool is zero on a car without one, so the loop
+	-- would sit silent anyway -- but the valve is a one-shot and a car with a
+	-- BOV sound and no turbo would chirp on every lift for no reason.
+	local turbo = def.turbo == true
+
+	if fx.turboSpool then
+		local spool = turbo and math.clamp(state.spool or 0, 0, 1) or 0
+
+		fx.turboSpool.Volume = (fx.spoolVolume or 0.5) * spool
+		-- Rising as it comes on song. A spool that only got louder sounds
+		-- like a volume knob; the pitch is what makes it sound like it is
+		-- spinning up.
+		fx.turboSpool.PlaybackSpeed = (fx.spoolPitch or 1) * (0.75 + spool * 0.5)
+
+		if spool > 0.02 then
+			if not fx.turboSpool.IsPlaying then
+				fx.turboSpool.Looped = true
+				fx.turboSpool:Play()
+			end
+		elseif fx.turboSpool.IsPlaying then
+			fx.turboSpool:Stop()
+		end
+	end
+
+	-- The valve. Rewound for the same reason the backfire is: an upshift and
+	-- a lift can land inside one sample's length, and the second one is the
+	-- one you were listening for.
+	if fx.bov and turbo and state.bov then
+		fx.bov.TimePosition = 0
+		fx.bov:Play()
 	end
 
 	--------------------------------------------------------------
@@ -352,9 +472,22 @@ function VehicleFX.Report(model, rig)
 		("  backfire snd  %s"):format(state(fx.backfireSound)),
 		("  screech snd   %s%s"):format(state(fx.screech),
 			fx.screech and (" (volume %.2f)"):format(fx.screechVolume or 0) or ""),
-		("  exhaust       %s"):format(state(fx.exhaust, fx.baseRates.exhaust)),
-		("  backfire fx   %s"):format(state(fx.backfire, fx.baseRates.backfire)),
+		("  turbo spool   %s%s"):format(state(fx.turboSpool),
+			fx.turboSpool and (" (volume %.2f)"):format(fx.spoolVolume or 0) or ""),
+		("  bov snd       %s"):format(state(fx.bov)),
+		("  engine start  %s"):format(state(fx.engineStart)),
+		("  turbo on car  %s"):format(rig.def.turbo == true and "yes" or "no"),
+		("  exhausts      %d"):format(#fx.exhausts),
 	}
+
+	-- Listed per pipe, because "exhausts 2" and a silent second one is the
+	-- shape of the bug this report exists to name.
+	for i, pipe in ipairs(fx.exhausts) do
+		table.insert(lines, ("    #%d smoke %s | flame %s | cloud %s"):format(i,
+			state(pipe.smoke, pipe.baseSmoke),
+			state(pipe.backfire, pipe.baseBackfire),
+			state(pipe.backfireSmoke, pipe.baseBackfireSmoke)))
+	end
 
 	for i, wheel in ipairs(rig.wheels) do
 		table.insert(lines, ("  wheel %-8s %s"):format(
@@ -363,6 +496,20 @@ function VehicleFX.Report(model, rig)
 	end
 
 	return lines
+end
+
+-- The ignition, on getting in. Separate from Update because it is an EVENT
+-- and Update is a per-frame state function -- a one-shot driven from a state
+-- flag would need the flag cleared by whoever set it, and forgetting that is
+-- a starter motor that grinds every frame.
+function VehicleFX.Start(model, rig)
+	if not (model and rig and rig.chassis) then return end
+
+	local fx = fxOf(model, rig)
+	if not fx.engineStart then return end
+
+	fx.engineStart.TimePosition = 0
+	fx.engineStart:Play()
 end
 
 -- Called when a car stops being driven or watched, so it does not sit there
@@ -376,8 +523,16 @@ function VehicleFX.Quiet(rig)
 		fx.screech.Volume = 0
 		if fx.screech.IsPlaying then fx.screech:Stop() end
 	end
-	if fx.exhaust then fx.exhaust.Rate = 0 end
-	if fx.backfire then fx.backfire.Rate = 0 end
+	if fx.turboSpool then
+		fx.turboSpool.Volume = 0
+		if fx.turboSpool.IsPlaying then fx.turboSpool:Stop() end
+	end
+
+	for _, pipe in ipairs(fx.exhausts) do
+		if pipe.smoke then pipe.smoke.Rate = 0 end
+		if pipe.backfire then pipe.backfire.Rate = 0 end
+		if pipe.backfireSmoke then pipe.backfireSmoke.Rate = 0 end
+	end
 	for _, emitter in pairs(fx.wheelSmoke) do emitter.Rate = 0 end
 end
 

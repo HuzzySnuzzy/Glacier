@@ -617,6 +617,30 @@ local function step(s, dt)
 	s.backfired = s.shiftedUp and (def.horsepower >= def.backfirePower)
 
 	--------------------------------------------------------------
+	-- 3c. TURBO
+	--------------------------------------------------------------
+	-- Another number for the effects layer, not more power. See the note on
+	-- the def fields: what boost drives here is the spool whine and when the
+	-- blow-off valve opens.
+	--
+	-- Mid-shift the throttle is DOWN as far as the turbo is concerned, because
+	-- the drive is cut and the engine is not pumping gas through it. That is
+	-- the same reason a real car chirps its valve on every upshift, and doing
+	-- it any other way would mean the one moment everybody recognises is the
+	-- one moment nothing happens.
+	local wasBoosted = (s.spool or 0) >= def.bovSpool
+	local turboThrottle = ((s.shiftRemaining or 0) > 0) and 0 or math.max(throttleAxis, 0)
+	s.spool = VehicleDefs.TurboSpool(def, s.spool, turboThrottle, s.rpm, dt)
+
+	-- A blow-off valve vents the boost that has nowhere to go when the
+	-- throttle plate shuts against it. So: a LIFT, or a shift, and only while
+	-- there was something to vent -- measured BEFORE this frame's spool, or
+	-- the same update that dumps the boost also decides there was none.
+	local lifted = (s.lastThrottle or 0) > 0.2 and math.max(throttleAxis, 0) <= 0.2
+	s.bov = def.turbo and wasBoosted and (lifted or s.shiftedUp)
+	s.lastThrottle = math.max(throttleAxis, 0)
+
+	--------------------------------------------------------------
 	-- 4. LONGITUDINAL
 	--------------------------------------------------------------
 	local accel = Vector3.zero
@@ -1156,6 +1180,7 @@ local function startDriving(model, def, index)
 		def = rig.def,
 		rig = rig,
 		cf = chassis.CFrame,
+		spool = 0,
 		renderCf = chassis.CFrame,
 		prevRenderCf = chassis.CFrame,
 		prevPhysicsCf = chassis.CFrame,
@@ -1175,6 +1200,10 @@ local function startDriving(model, def, index)
 		paramsPuppet = State.playerPuppet,
 	}
 	accumulator = 0
+
+	-- The ignition, once, on getting in. An event rather than a state, so it
+	-- fires here rather than being inferred inside the per-frame update.
+	VehicleFX.Start(model, rig)
 end
 
 local function stopDriving()
@@ -1411,6 +1440,10 @@ local function pushObserved(packet)
 		-- prop sliding past.
 		rpm = num(packet.rpm, 0),
 		gear = num(packet.gear, 1),
+		spool = num(packet.spool, 0),
+		-- A one-shot, so it is a flag rather than a level. Sent as a boolean
+		-- and read back as one: an interpolated valve chirp is not a thing.
+		bov = packet.bov == true,
 		throttle = num(packet.throttle, 0),
 		slipFront = num(packet.slipFront, 0),
 		slipRear = num(packet.slipRear, 0),
@@ -1483,9 +1516,19 @@ local function drawObserved()
 				local shifted = entry.lastGear ~= nil and a.gear > entry.lastGear
 				entry.lastGear = a.gear
 
+				-- Computed BEFORE the snapshot is marked, or marking it would
+				-- make the test below false on the very frame it should fire.
+				local bovNow = a.bov and entry.lastBov ~= a
+				if a.bov then entry.lastBov = a end
+
 				VehicleFX.Update(model, entry.rig, {
 					rpm = a.rpm,
 					gear = a.gear,
+					spool = a.spool,
+					-- Fired on the snapshot we are actually drawing, and only
+					-- once: without the guard a valve would chirp every frame
+					-- the buffer sat on the same packet.
+					bov = bovNow,
 					throttle = a.throttle,
 					slipFront = a.slipFront,
 					slipRear = a.slipRear,
@@ -1570,6 +1613,8 @@ function Vehicle.Update(deltaTime)
 		VehicleFX.Update(seatModel, rig, {
 			rpm = sim.rpm,
 			gear = sim.gear,
+			spool = sim.spool,
+			bov = sim.bov,
 			throttle = math.clamp(num(State.forwardMoveAxis, 0), 0, 1),
 			slipFront = sim.slipFront,
 			slipRear = sim.slipRear,
@@ -1627,6 +1672,8 @@ function Vehicle.Sync()
 		pitch = sim.pitchAngle,
 		rpm = sim.rpm,
 		gear = sim.gear,
+		spool = sim.spool,
+		bov = sim.bov,
 		throttle = math.clamp(num(State.forwardMoveAxis, 0), 0, 1),
 		slipFront = sim.slipFront,
 		slipRear = sim.slipRear,

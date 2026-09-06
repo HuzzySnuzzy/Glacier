@@ -147,6 +147,30 @@ local DEFAULTS = {
 	enginePitchMax = 1.7,     -- at the redline
 	revScale       = 1,       -- squeezes (or stretches) that span about idle
 
+	--=================================================================
+	-- TURBO
+	--=================================================================
+	-- Off unless the car says otherwise, because a turbo is a character
+	-- decision: the spool and the valve are the two most recognisable noises
+	-- a car can make, and putting them on everything makes them mean nothing.
+	--
+	-- Faked like the gearbox, and for the same reason -- boost here produces
+	-- a NUMBER, not more power. What that number drives is the spool whine
+	-- and when the blow-off valve fires, which is the whole of what a turbo
+	-- contributes to how a car sounds.
+	turbo         = false,
+
+	-- Boost builds only under LOAD, which is throttle and revs together --
+	-- a turbo is driven by exhaust gas, and there is none worth having at
+	-- idle. Off the throttle it bleeds away whatever the revs are doing,
+	-- which is why a turbo car goes quiet the instant you lift.
+	turboOnset    = 0.35,     -- fraction of the rev range below which nothing spools
+	turboSpoolUp  = 2.2,      -- how fast it builds, per second at full load
+	turboSpoolDown = 3.4,     -- and how fast it bleeds off; lag is the gap between these
+
+	-- Least boost worth hearing a valve for. Below it a lift is just a lift.
+	bovSpool      = 0.35,
+
 	-- Above this, an upshift spits flame. Nothing to do with the physics --
 	-- it is a decision about which cars are loud, and it is a horsepower
 	-- figure so it reads the way the rest of the engine numbers do.
@@ -803,6 +827,30 @@ function VehicleDefs.EnginePitch(def, rpm)
 	return lo + (hi - lo) * fraction
 end
 
+-- Where the boost goes next, 0 to 1.
+--
+-- Pure, so the whole of a turbo's behaviour can be tested without a Sound in
+-- the room: how long it takes to come on song, that it does not spool at idle
+-- however hard you press, and that it dumps the moment you lift.
+--
+-- The lag people mean when they say "turbo lag" is the gap between the two
+-- rates: building is deliberately slower than bleeding, so a lift-and-back-on
+-- costs you the boost and the time to make it again.
+function VehicleDefs.TurboSpool(def, spool, throttle, rpm, dt)
+	if not def.turbo then return 0 end
+	spool = spool or 0
+
+	local span = math.max(def.redlineRpm - def.idleRpm, 1)
+	local revs = math.clamp(((rpm or def.idleRpm) - def.idleRpm) / span, 0, 1)
+
+	local onset = def.turboOnset or 0
+	local load = math.clamp(throttle or 0, 0, 1)
+		* math.clamp((revs - onset) / math.max(1 - onset, 1e-3), 0, 1)
+
+	local rate = (load > spool) and (def.turboSpoolUp or 2) or (def.turboSpoolDown or 3)
+	return math.clamp(spool + (load - spool) * math.clamp(rate * dt, 0, 1), 0, 1)
+end
+
 --=====================================================================
 -- ATTRIBUTE TUNING
 --=====================================================================
@@ -829,6 +877,11 @@ local ATTRIBUTE_ALIASES = {
 	Steering      = "steerAngle",
 	Suspension    = "suspension",
 	BodyRoll      = "bodyRoll",
+	Turbo         = "turbo",
+	TurboSpoolUp  = "turboSpoolUp",
+	TurboSpoolDown = "turboSpoolDown",
+	TurboOnset    = "turboOnset",
+	BOVSpool      = "bovSpool",
 	Redline       = "redlineRpm",
 	RevLimit      = "redlineRpm",
 	Idle          = "idleRpm",

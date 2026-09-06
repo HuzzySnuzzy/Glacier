@@ -721,6 +721,45 @@ local function applySync(plr, packet)
 	return model
 end
 
+-- What a receiver actually draws from.
+--
+-- A WHITELIST, and a named one, because this list is how the bug got in: it
+-- was written out by hand at the call site as cf/vel/steer/wheelSpin, and
+-- every field added to the packet afterwards -- the body lean, the revs, the
+-- gear, the slip -- was simply not forwarded. Other people's cars drove
+-- around flat, silent and never smoking, and nothing said so.
+--
+-- Copied field by field rather than forwarding the packet, because the packet
+-- came off a client's wire and may carry anything at all.
+local RELAY_NUMBERS = {
+	"steer", "wheelSpin", "roll", "pitch",
+	"rpm", "gear", "throttle", "slipFront", "slipRear", "spool",
+}
+
+local function finite(v)
+	return type(v) == "number" and v == v and math.abs(v) < 1e9
+end
+
+local function relayed(model, packet)
+	local out = {
+		vehicle = model,
+		cf = packet.cf,
+		vel = packet.vel,
+		-- One-shots stay booleans: an interpolated valve chirp is not a thing.
+		bov = packet.bov == true,
+		T = workspace:GetServerTimeNow(),
+	}
+
+	-- Dropped rather than clamped when it is not a finite number: the
+	-- receiver's own defaults are better than a made-up figure, and a NaN
+	-- here becomes a NaN PlaybackSpeed on somebody else's machine.
+	for _, key in ipairs(RELAY_NUMBERS) do
+		if finite(packet[key]) then out[key] = packet[key] end
+	end
+
+	return out
+end
+
 VehicleSync.OnServerEvent:Connect(function(plr, packet)
 	local model = applySync(plr, packet)
 	if not model then return end
@@ -729,14 +768,7 @@ VehicleSync.OnServerEvent:Connect(function(plr, packet)
 	-- earlier and without the round trip.
 	for _, other in ipairs(Players:GetPlayers()) do
 		if other ~= plr then
-			VehicleSync:FireClient(other, {
-				vehicle = model,
-				cf = packet.cf,
-				vel = packet.vel,
-				steer = packet.steer,
-				wheelSpin = packet.wheelSpin,
-				T = workspace:GetServerTimeNow(),
-			})
+			VehicleSync:FireClient(other, relayed(model, packet))
 		end
 	end
 end)
