@@ -303,7 +303,7 @@ local function tryEnter(plr, model, seatIndex)
 	if not body then return false, "you have no body" end
 	local puppet = body:FindFirstChild("Puppet")
 	if not puppet then return false, "you have no puppet" end
-	
+
 	local range = Config.Get("sv_vehicle_userange") or 12
 	-- Measured to the chassis SURFACE, not its centre: a van is seven studs
 	-- wide, and a range measured to the middle of it would mean standing at
@@ -314,9 +314,9 @@ local function tryEnter(plr, model, seatIndex)
 		math.clamp(nearest.X, -half.X, half.X),
 		math.clamp(nearest.Y, -half.Y, half.Y),
 		math.clamp(nearest.Z, -half.Z, half.Z))
-	
-	
-	
+
+
+
 	if (nearest - clamped).Magnitude > range then
 		return false, "too far from that vehicle :u"..tostring( (nearest - clamped).Magnitude)
 	end
@@ -722,13 +722,15 @@ end
 local function spawnPointFor(plr)
 	local body = plr and Glacier.RawBody(plr)
 	if not body then return CFrame.new(0, 5, 0) end
+	local puppet = body:FindFirstChild("Puppet")
+	if not puppet then return CFrame.new(0,5,0) end
 
 	local look = body.CFrame.LookVector
 	local flat = Vector3.new(look.X, 0, look.Z)
 	flat = (flat.Magnitude > 1e-3) and flat.Unit or Vector3.zAxis
-
-	local ahead = body.Position + flat * 14
-
+	
+	local ahead = (puppet:GetPivot() * CFrame.new(0,0,-15)).Position
+	print(ahead)
 	-- Find the GROUND under that point rather than using the spawner's own
 	-- height. body.Position is the centre of the hull, so it is already a
 	-- couple of studs above their feet, and standing on anything raised
@@ -740,8 +742,8 @@ local function spawnPointFor(plr)
 	params.FilterDescendantsInstances = { body, folder() }
 	params.FilterType = Enum.RaycastFilterType.Exclude
 
-	local hit = workspace:Raycast(ahead + Vector3.new(0, 20, 0), Vector3.new(0, -600, 0), params)
-	local ground = hit and hit.Position.Y or body.Position.Y
+	local hit = workspace:Raycast(ahead + Vector3.new(0, 50, 0), Vector3.new(0, -600, 0), params)
+	local ground = hit and hit.Position.Y or puppet:GetPivot().Position.Y
 
 	local at = Vector3.new(ahead.X, ground, ahead.Z)
 	-- The settle pass catches whatever this gets wrong, so a miss here is a
@@ -917,7 +919,7 @@ Config.Command("vehicle_rig", {
 		if #rig.wheels > 0 and not rig.wheels[1].part then
 			table.insert(lines,
 				"  (no wheel parts found -- this is the nominal layout, so the "
-				.. "model's own wheels are neither anchored nor drawn)")
+					.. "model's own wheels are neither anchored nor drawn)")
 		end
 
 		reply(ctx, table.concat(lines, "\n"))
