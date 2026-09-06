@@ -296,7 +296,14 @@ RunService.RenderStepped:Connect(function(deltaTime)
 	-- Simulate, THEN draw. Physics.Update publishes State.tickAlpha from what
 	-- is left in the accumulator, so everything below reads a fraction that is
 	-- current as of this frame.
-	Input.UpdateMouse()
+	-- Input.UpdateMouse is NOT called here any more.
+	--
+	-- It is Input.Refresh, which decides whether the cursor is free and
+	-- whether the menu can be clicked, and it sat below the playerBody guard
+	-- above -- so it never ran on the join screen, which is the one place a
+	-- free cursor is the entire point. Input polls it on Heartbeat itself
+	-- now; see the note at the end of Input.Init. Do not add it back here,
+	-- and especially not below a guard.
 	Input.UpdateWishDir()
 
 	-- Vehicle first, and it returns whether it has taken over. Driving and

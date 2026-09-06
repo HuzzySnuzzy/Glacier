@@ -19,6 +19,7 @@
 
 local UserInputService = game:GetService("UserInputService")
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 
 local Config = require(game:GetService("ReplicatedStorage"):WaitForChild("Config"))
 local State  = require(script.Parent.State)
@@ -1148,6 +1149,27 @@ function Input.Init()
 
 	Input.BindDefaults()
 	Input.Refresh()
+
+	-- POLLED HERE, by Input, every frame.
+	--
+	-- Refresh was called from the client's render loop, below a
+	-- `if not State.playerBody then return end` guard -- so while the player
+	-- was on the join screen, not yet spawned, it never ran at all. Modal
+	-- state was then frozen at whatever the single Init-time call had seen,
+	-- and whether that was right came down to a race: if the menu ScreenGui
+	-- had replicated into PlayerGui AND been enabled before Init, the cursor
+	-- appeared and Resume was clickable; if Init won, MouseBehavior stayed
+	-- LockCenter, the cursor stayed hidden, and the button could not be
+	-- clicked at all. About half the time, with a restart as the only cure.
+	--
+	-- Owning the poll here is the fix rather than moving that one call above
+	-- that one guard, because the failure was never really about the guard:
+	-- it was that whether the cursor works depended on a caller in another
+	-- module remembering to call this unconditionally. It does not any more.
+	--
+	-- Heartbeat rather than RenderStepped: nothing here draws, and the writes
+	-- below are all no-ops unless something actually changed.
+	table.insert(conns, RunService.Heartbeat:Connect(Input.Refresh))
 end
 
 function Input.Destroy()

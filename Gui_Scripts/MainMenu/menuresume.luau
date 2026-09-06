@@ -137,10 +137,22 @@ end
 -- RESUME
 --=====================================================================
 
--- Guards a double click during the request's round trip. Cleared by the
--- server's answer, not by a timer, so a slow server cannot leave the button
--- dead nor let two spawns through.
+-- Guards a double click during the request's round trip.
+--
+-- Cleared by the server's answer -- OR by a timeout, which is the part that
+-- matters. The server can refuse a request without saying so: mid-round
+-- intermission and an unexpired respawn timer both drop their latch and
+-- return, sending nothing back. A client that only ever unlatches on a reply
+-- is then stuck with a dead Resume button until the next round happens to
+-- push the join screen at it again.
+--
+-- Two seconds is far longer than a round trip and far shorter than anyone's
+-- patience. Re-arming does not spawn anything twice: the server ignores a
+-- request from a player who is already alive.
+local RETRY_AFTER = 2
+
 local sent = false
+local sentToken = 0
 
 button.Activated:Connect(function()
 	if not gui.Enabled then return end
@@ -148,6 +160,15 @@ button.Activated:Connect(function()
 	if mode() == "join" then
 		if sent then return end
 		sent = true
+
+		sentToken += 1
+		local token = sentToken
+		task.delay(RETRY_AFTER, function()
+			-- Tokened, so a timeout from an EARLIER click cannot re-arm the
+			-- button in the middle of a later request that is still in flight.
+			if token == sentToken then sent = false end
+		end)
+
 		RequestSpawn:FireServer()
 		-- NOT closed here: the server answers with ShowJoinUI(false) when the
 		-- spawn actually happens, and closing early on a refused request would
@@ -159,8 +180,12 @@ button.Activated:Connect(function()
 end)
 
 ShowJoinUI.OnClientEvent:Connect(function(visible)
+	-- Bumped either way, so a timeout still pending from the click that
+	-- caused this answer cannot fire afterwards and unlatch a fresh request.
+	sentToken += 1
+	sent = false
+
 	if visible then
-		sent = false
 		open("join")
 	else
 		setMode("pause")
