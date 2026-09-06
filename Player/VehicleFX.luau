@@ -33,6 +33,9 @@
 -- "engine_loop" and "Engine" all work. Art gets named by hand and this should
 -- not be a spelling test.
 
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VehicleDefs = require(ReplicatedStorage:WaitForChild("VehicleDefs"))
+
 local VehicleFX = {}
 
 --=====================================================================
@@ -130,6 +133,18 @@ local function fxOf(model, rig)
 	-- is the loud end the same way their Rate is. Captured before anything
 	-- here touches it, or the first quiet frame would become the new maximum
 	-- and the sound would fade away over the session.
+	if fx.engine then
+		-- Same reasoning as the rates: remembered on the instance, because
+		-- this code overwrites PlaybackSpeed every frame and a rebuilt rig
+		-- would otherwise read last frame's pitch as the artist's.
+		local saved = fx.engine:GetAttribute("FXBasePitch")
+		if saved == nil then
+			saved = fx.engine.PlaybackSpeed
+			fx.engine:SetAttribute("FXBasePitch", saved)
+		end
+		fx.enginePitch = saved
+	end
+
 	if fx.screech then
 		local saved = fx.screech:GetAttribute("FXBaseVolume")
 		if saved == nil then
@@ -160,13 +175,6 @@ end
 -- ENGINE
 --=====================================================================
 
--- Playback speed for a given rpm. The sound was recorded at SOME rpm; without
--- knowing which, the only honest thing is to map the engine's whole range
--- onto a playback range that sounds like an engine, and let the artist move
--- it with the Sound's own PlaybackSpeed as a starting point.
-local MIN_PITCH = 0.55
-local MAX_PITCH = 2.2
-
 -- Below this much slip the tyres are gripping as far as anyone can hear or
 -- see, and both the noise and the smoke stay off.
 --
@@ -184,10 +192,18 @@ local function slipVoice(slip)
 	return math.clamp((slip - SLIP_FLOOR) / (1 - SLIP_FLOOR), 0, 1)
 end
 
-local function enginePitch(def, rpm)
-	local span = math.max(def.redlineRpm - def.idleRpm, 1)
-	local fraction = math.clamp((rpm - def.idleRpm) / span, 0, 1.1)
-	return MIN_PITCH + (MAX_PITCH - MIN_PITCH) * fraction
+-- The rpm-to-pitch CURVE is VehicleDefs.EnginePitch, so it can be tuned per
+-- car -- RevScale, EnginePitchMin, EnginePitchMax -- and tested without a
+-- Sound instance in the room.
+--
+-- What stays here is the one thing that is not the car's business: the speed
+-- the SAMPLE was authored at. It is read once and multiplied rather than
+-- overwritten, so setting PlaybackSpeed on the Sound in Studio still does
+-- what it looks like it does. Overwriting it, against a fixed span of more
+-- than a factor of four, is what made a loop already recorded at high revs
+-- sound like a motorway in first gear.
+local function enginePitch(fx, def, rpm)
+	return (fx.enginePitch or 1) * VehicleDefs.EnginePitch(def, rpm)
 end
 
 --=====================================================================
@@ -211,7 +227,7 @@ function VehicleFX.Update(model, rig, state, deltaTime)
 	--------------------------------------------------------------
 	if fx.engine then
 		local rpm = state.rpm or def.idleRpm
-		fx.engine.PlaybackSpeed = enginePitch(def, rpm)
+		fx.engine.PlaybackSpeed = enginePitch(fx, def, rpm)
 
 		-- Started here rather than assumed: a Sound left not-playing in the
 		-- model would otherwise be silent forever with no clue why.

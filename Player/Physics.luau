@@ -164,7 +164,12 @@ end
 -- recent addition and an unknown property assignment is an error, not a
 -- no-op -- on a client old enough to lack it the behaviour is simply what it
 -- was before.
+-- Behind a cvar, because it changes what counts as solid. A map built against
+-- the old behaviour can have surfaces that are non-colliding and were relied
+-- on anyway, and when those vanish it reads as the movement code breaking
+-- rather than as the map. One command settles which it is.
 local function respectCanCollide(params)
+	if Config.mv_respectCanCollide == false then return params end
 	pcall(function() params.RespectCanCollide = true end)
 	return params
 end
@@ -182,6 +187,25 @@ local function MakeOverlapParams(body, puppet)
 	op.FilterType = Enum.RaycastFilterType.Exclude
 	op.MaxParts = 16
 	return respectCanCollide(op)
+end
+
+-- The same query WITHOUT the CanCollide filter, for finding things you are
+-- meant to pass through.
+--
+-- A ladder is a trigger volume, not a wall: you walk INTO the brush and climb
+-- it, so it is CanCollide false in every map that has one. Sharing the
+-- collision params meant switching those on to respect CanCollide silently
+-- deleted every ladder in the game from the search -- the movement code was
+-- correct and simply never saw them.
+--
+-- MaxParts is higher because this query is not looking for the nearest
+-- blocker but for one tagged part among whatever decoration shares the space.
+local function MakeTriggerParams(body, puppet)
+	local op = OverlapParams.new()
+	op.FilterDescendantsInstances = ignoreList(body, puppet)
+	op.FilterType = Enum.RaycastFilterType.Exclude
+	op.MaxParts = 32
+	return op
 end
 
 -- Broad phase: a bounds query gathers candidates (generous, since a rotated
@@ -666,6 +690,7 @@ function Physics.Step(deltaTime)
 
 	local params = MakeParams(body, puppet)
 	local op = MakeOverlapParams(body, puppet)
+	local triggerOp = MakeTriggerParams(body, puppet)
 
 	State.velocity = State.velocity or Vector3.zero
 	local vel = State.velocity
@@ -1029,7 +1054,8 @@ function Physics.Step(deltaTime)
 	-- the very next tick because we're still inside the grab volume.
 	local ladderPart, ladderNormal
 	if State.ladderTimeout <= 0 then
-		ladderPart, ladderNormal = findLadder(pos, hullSize, op)
+		-- triggerOp, not op: see MakeTriggerParams. A ladder does not collide.
+		ladderPart, ladderNormal = findLadder(pos, hullSize, triggerOp)
 	end
 
 	if ladderPart and not jumpedThisFrame then
@@ -1318,5 +1344,53 @@ function Physics.Step(deltaTime)
 
 	Commit(body, pos, vel, deltaTime)
 end
+
+--=====================================================================
+-- COMMANDS
+--=====================================================================
+
+-- Ducking briefly unglues you from the floor, and those airborne frames run
+-- air-accel instead of friction. That is scroll-ground-strafe, and it is a
+-- movement style rather than a fact about the engine -- a server running
+-- straight CS:GO movement does not want it, a surf or bhop server does.
+--
+-- The switch is mv_groundStrafe, which has always existed and gates the lift
+-- at its source: with it off no duck ever grants an airborne tick, so the
+-- raised air cap and the softened friction never come into play either. What
+-- this adds is a name you can remember and a reply saying which way it went.
+Config.Command("crouchairtime", {
+	args = { "string?" },
+	help = "toggle the airborne window a crouch grants (scroll ground strafe)",
+	run = function(ctx, arg)
+		local now = Config.mv_groundStrafe ~= false
+		local want
+
+		if arg == nil or arg == "" then
+			want = not now
+		else
+			local lower = string.lower(arg)
+			want = (lower == "1" or lower == "on" or lower == "true" or lower == "yes")
+			if not want and not (lower == "0" or lower == "off"
+				or lower == "false" or lower == "no") then
+				return false, "expected on/off, 1/0, or no argument to toggle"
+			end
+		end
+
+		local ok, why = Config.Set("mv_groundStrafe", want)
+		if not ok then return false, why end
+
+		-- Cleared rather than left to expire. Switching the feature off with a
+		-- lift already in flight would otherwise leave the player airborne for
+		-- the rest of its window with nothing left able to end it.
+		if not want then
+			State.duckLift = 0
+			State.sgsGrace = 0
+		end
+
+		ctx.reply(("crouch air time %s  (mv_groundStrafe %s)")
+			:format(want and "ON" or "OFF", tostring(want)))
+		return true
+	end,
+})
 
 return Physics

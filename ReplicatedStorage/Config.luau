@@ -198,10 +198,23 @@ Define("mv_abhBoostPercDucked", 0.1, FCVAR.REPLICATED + FCVAR.CHEAT)   -- ducked
 -- Ground strafing. Ducking briefly unglues you from the floor; those airborne
 -- frames run air-accel instead of friction.
 Define("mv_groundStrafe", true, FCVAR.REPLICATED + FCVAR.CHEAT)
-Define("mv_duckLiftTime", 0.12, FCVAR.REPLICATED + FCVAR.CHEAT)        -- SECONDS of airborne window per duck
+Define("mv_duckLiftTime", 0.12, FCVAR.REPLICATED + FCVAR.CHEAT)        -- SECONDS of airborne window per duck; 0 also disables it
 Define("mv_sgsCapMult", 4, FCVAR.REPLICATED + FCVAR.CHEAT)             -- raises the air cap during lift frames
 Define("mv_sgsFrictionMult", 0.3, FCVAR.REPLICATED + FCVAR.CHEAT)      -- friction between notches; 1 = authentic
 Define("mv_sgsGraceTime", 0.15, FCVAR.REPLICATED + FCVAR.CHEAT)        -- how long that softening lasts
+
+-- Whether the movement sweeps ignore parts with CanCollide off.
+--
+-- On is right: it makes the sweeps agree with depenetration, which has always
+-- read CanCollide, and it stops decorative non-colliding parts acting as
+-- invisible walls. But it is a change in what counts as solid, and a map built
+-- against the old behaviour -- a ramp or a smoothing brush left non-colliding
+-- because the casts hit it anyway -- loses that surface the moment it goes on.
+-- Toggleable so that is one command to confirm rather than a guess.
+--
+-- Ladders are NOT affected either way: they are searched with their own query
+-- that never filters on CanCollide, because a ladder is a thing you walk into.
+Define("mv_respectCanCollide", true, FCVAR.REPLICATED + FCVAR.CHEAT)
 
 -- 0 = raw input (authentic), 1 = the optimal strafe angle computed for you.
 -- Server-owned: this is an aim assist for movement.

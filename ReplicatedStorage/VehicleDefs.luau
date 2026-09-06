@@ -130,6 +130,23 @@ local DEFAULTS = {
 	redlineRpm   = 6800,
 	revLimiter   = true,      -- hold at the redline in top gear rather than past it
 
+	-- HOW FAR THE ENGINE NOTE MOVES, as multipliers on the PlaybackSpeed the
+	-- sound was authored at. The rpm decides where between them it sits.
+	--
+	-- These exist separately from the rpm because they are not the same
+	-- question. The rpm is a fact about the car; how far a sample may be
+	-- stretched is a fact about the SAMPLE. A loop recorded near the redline
+	-- is already a scream at 1.0, and the old fixed 0.55-to-2.2 span -- more
+	-- than a factor of four, applied on top of whatever the artist set --
+	-- made first gear at walking pace sound like a motorway.
+	--
+	-- Defaults are deliberately narrow. A real engine across its whole range
+	-- is about an octave, which is a factor of two; going wider is an effect,
+	-- not realism, and should be asked for.
+	enginePitchMin = 0.8,     -- at idle
+	enginePitchMax = 1.7,     -- at the redline
+	revScale       = 1,       -- squeezes (or stretches) that span about idle
+
 	-- Above this, an upshift spits flame. Nothing to do with the physics --
 	-- it is a decision about which cars are loud, and it is a horsepower
 	-- figure so it reads the way the rest of the engine numbers do.
@@ -770,6 +787,22 @@ function VehicleDefs.RpmFor(def, gear, speed)
 	return def.idleRpm + (inGear - def.idleRpm) * rolling
 end
 
+-- Playback speed for the engine loop at a given rpm, as a MULTIPLIER on
+-- whatever the sound was authored at.
+--
+-- Returned as a multiplier rather than an absolute speed so the artist's own
+-- PlaybackSpeed still means something: a loop recorded at high revs is set to
+-- 0.5 in Studio and everything here follows it, instead of being stretched
+-- from a value this code invented.
+function VehicleDefs.EnginePitch(def, rpm)
+	local span = math.max(def.redlineRpm - def.idleRpm, 1)
+	local fraction = math.clamp(((rpm or def.idleRpm) - def.idleRpm) / span, 0, 1)
+
+	local lo = def.enginePitchMin or 0.8
+	local hi = lo + ((def.enginePitchMax or 1.7) - lo) * (def.revScale or 1)
+	return lo + (hi - lo) * fraction
+end
+
 --=====================================================================
 -- ATTRIBUTE TUNING
 --=====================================================================
@@ -797,8 +830,12 @@ local ATTRIBUTE_ALIASES = {
 	Suspension    = "suspension",
 	BodyRoll      = "bodyRoll",
 	Redline       = "redlineRpm",
+	RevLimit      = "redlineRpm",
 	Idle          = "idleRpm",
 	BackfirePower = "backfirePower",
+	RevScale      = "revScale",
+	EnginePitchMin = "enginePitchMin",
+	EnginePitchMax = "enginePitchMax",
 }
 
 -- Applied to a COPY, so one car's attributes never leak into the class every
