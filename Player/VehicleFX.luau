@@ -99,13 +99,40 @@ end
 -- lookup would read the zero this code left behind and take it for the
 -- artist's intent. The tyres would then smoke once per session and never
 -- again -- which is the kind of bug that looks like bad luck.
-local function rememberedRate(emitter)
+local function rememberedRate(emitter, fallback)
 	local saved = emitter:GetAttribute("FXBaseRate")
 	if saved == nil then
 		saved = emitter.Rate
 		emitter:SetAttribute("FXBaseRate", saved)
 	end
+
+	-- A rate of ZERO is treated as "not set" rather than as "never emit".
+	--
+	-- An emitter authored at 0 is indistinguishable from a broken one to the
+	-- player, and it is a normal way to leave one: you set Rate to 0, or you
+	-- untick Enabled, so the thing does not spew all over the model while you
+	-- are building it. Neither is a statement that this effect should not
+	-- exist -- the effect existing at all is that statement.
+	if not saved or saved <= 0 then return fallback or 0 end
 	return saved
+end
+
+-- Rate AND Enabled, together, always.
+--
+-- This is the whole of why the tyres never smoked. Rate does NOTHING on an
+-- emitter whose Enabled is false, and false is how every one of these arrives
+-- from Studio -- you untick it so the car is not smoking from all four
+-- corners while you work on it. Emit() ignores Enabled, which is why the
+-- backfire burst worked the whole time and the smoke, which is rate-driven,
+-- never did: the two failure modes look identical from the code and opposite
+-- from the driver's seat.
+--
+-- Disabling at zero rather than leaving it enabled at zero is also just
+-- correct: an emitter at Rate 0 still costs a slot every frame.
+local function setRate(emitter, rate)
+	if not emitter then return end
+	emitter.Rate = rate
+	emitter.Enabled = rate > 0
 end
 
 -- Measured once per model and hung off the rig, because walking the tree for
@@ -175,10 +202,10 @@ local function fxOf(model, rig)
 	-- Per pipe, since two exhausts can be authored at different rates and
 	-- averaging them would make the quieter one wrong in both directions.
 	for _, pipe in ipairs(fx.exhausts) do
-		pipe.baseSmoke = pipe.smoke and rememberedRate(pipe.smoke) or 0
-		pipe.baseBackfire = pipe.backfire and rememberedRate(pipe.backfire) or 0
+		pipe.baseSmoke = pipe.smoke and rememberedRate(pipe.smoke, 6) or 0
+		pipe.baseBackfire = pipe.backfire and rememberedRate(pipe.backfire, 24) or 0
 		pipe.baseBackfireSmoke = pipe.backfireSmoke
-			and rememberedRate(pipe.backfireSmoke) or 0
+			and rememberedRate(pipe.backfireSmoke, 40) or 0
 	end
 
 	-- The screech is a LOOP whose volume is the effect, so the artist's volume
@@ -221,18 +248,18 @@ local function fxOf(model, rig)
 	end
 
 	for i, emitter in pairs(fx.wheelSmoke) do
-		fx.baseRates[i] = rememberedRate(emitter)
+		fx.baseRates[i] = rememberedRate(emitter, 20)
 	end
 
 	-- Emitters are switched off to begin with. An artist leaves them enabled
 	-- so they can see them while building, and a car should not arrive
 	-- smoking from all four corners.
 	for _, pipe in ipairs(fx.exhausts) do
-		if pipe.smoke then pipe.smoke.Rate = 0 end
-		if pipe.backfire then pipe.backfire.Rate = 0 end
-		if pipe.backfireSmoke then pipe.backfireSmoke.Rate = 0 end
+		setRate(pipe.smoke, 0)
+		setRate(pipe.backfire, 0)
+		setRate(pipe.backfireSmoke, 0)
 	end
-	for _, emitter in pairs(fx.wheelSmoke) do emitter.Rate = 0 end
+	for _, emitter in pairs(fx.wheelSmoke) do setRate(emitter, 0) end
 
 	rig.fx = fx
 	return fx
@@ -349,7 +376,7 @@ function VehicleFX.Update(model, rig, state, deltaTime)
 		local load = math.clamp(0.25 + throttle * 0.5 + revs * 0.5, 0, 1)
 
 		for _, pipe in ipairs(fx.exhausts) do
-			if pipe.smoke then pipe.smoke.Rate = pipe.baseSmoke * load end
+			setRate(pipe.smoke, pipe.baseSmoke * load)
 		end
 	end
 
@@ -412,7 +439,7 @@ function VehicleFX.Update(model, rig, state, deltaTime)
 		-- of full slip gets a third of the particles, which at any sane
 		-- authored rate is a handful a second and reads as nothing at all --
 		-- you hear the tyres let go and see no smoke.
-		emitter.Rate = (base[i] or 20) * math.sqrt(voice)
+		setRate(emitter, (base[i] or 20) * math.sqrt(voice))
 	end
 
 	--------------------------------------------------------------
@@ -461,7 +488,11 @@ function VehicleFX.Report(model, rig)
 	local function state(instance, rate)
 		if not instance then return "MISSING" end
 		if rate then
-			return ("%s (rate %.1f)"):format(instance.Name, rate)
+			-- Enabled is shown because "found, at a sensible rate, and
+			-- switched off" is a real state and is invisible from the rate
+			-- alone -- it is what kept the tyres from ever smoking.
+			return ("%s (rate %.1f, %s)"):format(instance.Name, rate,
+				instance.Enabled and "on" or "OFF")
 		end
 		return instance.Name
 	end
@@ -529,11 +560,11 @@ function VehicleFX.Quiet(rig)
 	end
 
 	for _, pipe in ipairs(fx.exhausts) do
-		if pipe.smoke then pipe.smoke.Rate = 0 end
-		if pipe.backfire then pipe.backfire.Rate = 0 end
-		if pipe.backfireSmoke then pipe.backfireSmoke.Rate = 0 end
+		setRate(pipe.smoke, 0)
+		setRate(pipe.backfire, 0)
+		setRate(pipe.backfireSmoke, 0)
 	end
-	for _, emitter in pairs(fx.wheelSmoke) do emitter.Rate = 0 end
+	for _, emitter in pairs(fx.wheelSmoke) do setRate(emitter, 0) end
 end
 
 return VehicleFX
