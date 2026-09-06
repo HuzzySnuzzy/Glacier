@@ -188,31 +188,43 @@ end
 --=====================================================================
 -- ROW
 --=====================================================================
--- A labelled setting: name on the left, control on the right, description
--- underneath when there is one. Every control below is built on it, so they
--- all line up without anyone measuring anything.
+-- A labelled setting: name on the left, control on the right. A description,
+-- when there is one, is a TOOLTIP rather than a second line.
+--
+-- Inline descriptions were the obvious version and they were wrong. A page of
+-- them is a wall of small grey text you stop reading by the fourth row, and
+-- they push every row to fifty pixels whether it needs the height or not --
+-- so the page you scroll is half again as long and the controls, which are
+-- the thing you came for, are further apart than they need to be. Half-Life
+-- put nothing under its rows at all; this keeps the help and moves it to
+-- where you ask for it.
+--
+-- Rows with help wear a dim marker after the name, because a tooltip nobody
+-- knows is there is the same as no tooltip.
 
 local ROW_HEIGHT = 34
 
 function MenuKit.Row(parent, name, description)
 	local C = MenuKit.C
-	local tall = description ~= nil and description ~= ""
+	local hasHelp = description ~= nil and description ~= ""
 
 	local row = Instance.new("Frame")
 	row.BackgroundTransparency = 1
-	row.Size = UDim2.new(1, 0, 0, tall and 50 or ROW_HEIGHT)
+	row.Size = UDim2.new(1, 0, 0, ROW_HEIGHT)
 	MenuKit.Order(parent, row)
 	row.Parent = parent
 
-	local title = MenuKit.Label(row, name, C.text, 14)
-	title.Size = UDim2.new(0.5, -8, 0, tall and 20 or ROW_HEIGHT)
+	local text = name
+	if hasHelp then
+		text = ('%s <font color="#5A6069">?</font>'):format(name)
+	end
+
+	local title = MenuKit.Label(row, text, C.text, 14)
+	title.Size = UDim2.new(0.5, -8, 1, 0)
 	title.Position = UDim2.new(0, 0, 0, 0)
 
-	if tall then
-		local sub = MenuKit.Label(row, description, C.faint, 11)
-		sub.Size = UDim2.new(0.62, -8, 0, 16)
-		sub.Position = UDim2.new(0, 0, 0, 19)
-		sub.TextTruncate = Enum.TextTruncate.AtEnd
+	if hasHelp then
+		MenuKit.Tip(row, description)
 	end
 
 	-- Where the control goes. Right-aligned and fixed width, because controls
@@ -220,11 +232,84 @@ function MenuKit.Row(parent, name, description)
 	local slot = Instance.new("Frame")
 	slot.BackgroundTransparency = 1
 	slot.AnchorPoint = Vector2.new(1, 0)
-	slot.Position = UDim2.new(1, 0, 0, tall and 8 or 0)
+	slot.Position = UDim2.new(1, 0, 0, 0)
 	slot.Size = UDim2.new(0, 210, 0, ROW_HEIGHT)
 	slot.Parent = row
 
 	return row, slot
+end
+
+--=====================================================================
+-- TOOLTIP
+--=====================================================================
+
+-- One tooltip instance for the whole panel, moved and refilled, rather than
+-- one per row. Twenty hidden labels that exist only to be shown one at a time
+-- is twenty instances and twenty layout passes for no reason.
+
+local tipLayer, tipFrame, tipLabel
+
+-- Where tooltips are drawn. Call it with the panel before building any rows;
+-- rows built with no layer set simply have no tooltip, which is a degraded
+-- page rather than an error.
+function MenuKit.SetTipLayer(host)
+	local C = MenuKit.C
+	tipLayer = host
+
+	tipFrame = Instance.new("Frame")
+	tipFrame.Name = "Tooltip"
+	tipFrame.BackgroundColor3 = C.bg
+	tipFrame.BorderSizePixel = 0
+	tipFrame.Visible = false
+	tipFrame.ZIndex = 50
+	tipFrame.AutomaticSize = Enum.AutomaticSize.Y
+	tipFrame.Size = UDim2.new(0, 260, 0, 0)
+	tipFrame.Parent = host
+	MenuKit.Corner(tipFrame, 5)
+	MenuKit.Stroke(tipFrame, C.line, 1, 0.2)
+	MenuKit.Pad(tipFrame, 8, 10, 10, 8)
+
+	tipLabel = MenuKit.Label(tipFrame, "", C.dim, 12)
+	tipLabel.ZIndex = 51
+	tipLabel.Size = UDim2.new(1, 0, 0, 0)
+	tipLabel.AutomaticSize = Enum.AutomaticSize.Y
+	tipLabel.TextWrapped = true
+	tipLabel.TextYAlignment = Enum.TextYAlignment.Top
+
+	return tipFrame
+end
+
+-- Shows `text` while the pointer is over `target`.
+function MenuKit.Tip(target, text)
+	if not tipFrame then return end
+
+	target.MouseEnter:Connect(function()
+		if not tipFrame then return end
+		tipLabel.Text = text
+
+		-- Placed under the row and to the left, in the layer's own space. The
+		-- row's absolute position minus the layer's is the only conversion
+		-- needed, and it stays correct if the panel is moved or the window
+		-- resized -- which the panel's open animation does every time.
+		local x = target.AbsolutePosition.X - tipLayer.AbsolutePosition.X
+		local y = target.AbsolutePosition.Y - tipLayer.AbsolutePosition.Y
+			+ target.AbsoluteSize.Y - 2
+
+		tipFrame.Position = UDim2.fromOffset(x, y)
+		tipFrame.Visible = true
+
+		-- From nothing rather than from wherever the last one finished: a
+		-- tooltip that slides across the panel between two rows is a
+		-- distraction pretending to be polish.
+		tipFrame.BackgroundTransparency = 1
+		tipLabel.TextTransparency = 1
+		MenuKit.Tween(tipFrame, MenuKit.HOVER, { BackgroundTransparency = 0.05 })
+		MenuKit.Tween(tipLabel, MenuKit.HOVER, { TextTransparency = 0 })
+	end)
+
+	target.MouseLeave:Connect(function()
+		if tipFrame then tipFrame.Visible = false end
+	end)
 end
 
 --=====================================================================
@@ -488,6 +573,13 @@ end
 function MenuKit.Overlay(parent, width, height)
 	local C = MenuKit.C
 
+	-- The scrim is a button so that a click outside the panel is CAUGHT
+	-- rather than falling through to the game behind the menu. Whether it
+	-- also closes the dialog is the caller's decision, not this one's: a
+	-- small confirmation should cancel on an outside click, and a settings
+	-- panel full of sliders should not -- the pointer leaves the panel
+	-- constantly while dragging, and losing the page to a stray click is
+	-- the most annoying thing a settings menu can do.
 	local scrim = Instance.new("TextButton")
 	scrim.Text = ""
 	scrim.AutoButtonColor = false

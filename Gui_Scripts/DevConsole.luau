@@ -882,9 +882,21 @@ syncOutputVisible()
 -- modalPassthrough in Input -- a disabled InputContext delivers no events.
 Input.ActionPressed.Event:Connect(function(command)
 	if command == "toggleconsole" then
+		-- cl_developer off means the key does nothing. Checked here rather
+		-- than by unbinding the key, so the player's own bind survives being
+		-- switched off and back on.
+		if Config.cl_developer == false then return end
+
 		lastToggleClock = os.clock()
 		setOpen(not isOpen())
 	end
+end)
+
+-- Switched off while it is open, the console has to go: leaving it up would
+-- mean the setting only takes effect next time, and the one thing someone
+-- turning this off wants is for it to be gone now.
+Config.OnChange("cl_developer", function(enabled)
+	if enabled == false and isOpen() then setOpen(false) end
 end)
 
 --=====================================================================

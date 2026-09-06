@@ -660,6 +660,20 @@ Define("unload_keepCamera", true, FCVAR.CHEAT)
 -- CONSOLE
 --=====================================================================
 
+-- Whether the developer console opens at all.
+--
+-- CLIENT, and default ON, because that is what the game already does and
+-- silently taking the console away from an existing install is worse than
+-- leaving a switch unflipped. It is a client cvar rather than a server one on
+-- purpose: this is a "get this out of my way" preference, not a permission --
+-- what a console can actually DO is already gated by FCVAR.CHEAT and by the
+-- server refusing replicated sets.
+--
+-- Reachable from the settings menu, which matters more than it sounds: turn
+-- this off and the console is the one place you can no longer turn it back on
+-- from, so it has to have a home outside the console.
+Define("cl_developer", true, FCVAR.CLIENT)
+
 Define("con_maxlines", 512, FCVAR.CLIENT)      -- ring buffer; oldest lines are destroyed
 Define("con_history", 64, FCVAR.CLIENT)        -- recalled with Up/Down
 Define("con_suggestions", 12, FCVAR.CLIENT)    -- rows in the autocomplete dropdown

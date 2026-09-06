@@ -108,6 +108,33 @@ end
 -- UPDATE
 --=====================================================================
 
+-- WHERE THE BARS GO, as offsets from the centre, for one set of numbers.
+--
+-- Pulled out of Update so the settings menu's preview can call it. A preview
+-- that re-derived this geometry would be a second implementation of it, and
+-- the whole value of a preview is that it shows you what you are about to
+-- get -- which it stops doing the first time the two drift apart.
+--
+-- Deliberately takes the numbers rather than reading the cvars: the preview
+-- needs to draw a value the player is dragging toward, not the one currently
+-- committed.
+function Crosshair.Layout(gap, length, thickness, wantDot)
+	local offset = gap + length / 2
+
+	local bars = {
+		{ name = "top",    dx = 0,       dy = -offset, w = thickness, h = length },
+		{ name = "bottom", dx = 0,       dy =  offset, w = thickness, h = length },
+		{ name = "left",   dx = -offset, dy = 0,       w = length,    h = thickness },
+		{ name = "right",  dx =  offset, dy = 0,       w = length,    h = thickness },
+	}
+
+	if wantDot then
+		table.insert(bars, { name = "dot", dx = 0, dy = 0, w = thickness, h = thickness })
+	end
+
+	return bars
+end
+
 function Crosshair.Update(deltaTime)
 	if not gui then return end
 
@@ -148,26 +175,21 @@ function Crosshair.Update(deltaTime)
 
 	-- ---- bars ----
 	local outlineThickness = Config.cl_crosshair_drawoutline and 1 or 0
-	local offset = gap + length / 2
 
-	local function place(bar, dx, dy, w, h)
-		bar.Position = UDim2.fromOffset(cx + dx, cy + dy)
-		bar.Size = UDim2.fromOffset(w, h)
+	local function place(bar, spec)
+		bar.Position = UDim2.fromOffset(cx + spec.dx, cy + spec.dy)
+		bar.Size = UDim2.fromOffset(spec.w, spec.h)
 		bar.BackgroundColor3 = colour
 		bar.BackgroundTransparency = alpha
 		bar.Outline.Thickness = outlineThickness
 		bar.Visible = true
 	end
 
-	place(top,    0, -offset, thickness, length)
-	place(bottom, 0,  offset, thickness, length)
-	place(left,  -offset, 0,  length, thickness)
-	place(right,  offset, 0,  length, thickness)
+	local bars = { top = top, bottom = bottom, left = left, right = right, dot = dot }
+	dot.Visible = false
 
-	if Config.cl_crosshairdot then
-		place(dot, 0, 0, thickness, thickness)
-	else
-		dot.Visible = false
+	for _, spec in ipairs(Crosshair.Layout(gap, length, thickness, Config.cl_crosshairdot)) do
+		place(bars[spec.name], spec)
 	end
 
 	-- ---- hit marker ----

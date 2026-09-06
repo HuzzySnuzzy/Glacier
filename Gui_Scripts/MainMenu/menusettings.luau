@@ -22,6 +22,7 @@
 -- that silently does nothing. The rows below are all FCVAR.CLIENT.
 
 local Players           = game:GetService("Players")
+local UserInputService  = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(ReplicatedStorage:WaitForChild("Config"))
@@ -79,7 +80,13 @@ local C = Kit.C
 local PANEL_W, PANEL_H = 780, 540
 local RAIL_W = 168
 
-local panel, openPanel, closePanel, scrim = Kit.Overlay(gui, PANEL_W, PANEL_H)
+-- The scrim is deliberately NOT captured: this panel does not close on an
+-- outside click. See the note above button.Activated at the foot of the file.
+local panel, openPanel, closePanel = Kit.Overlay(gui, PANEL_W, PANEL_H)
+
+-- Tooltips draw on the panel, above everything on it. Set before any row is
+-- built, since Row attaches its hover as it goes.
+Kit.SetTipLayer(panel)
 
 local header = Instance.new("Frame")
 header.BackgroundTransparency = 1
@@ -396,6 +403,17 @@ if Input then
 	Input.BindingChanged.Event:Connect(function()
 		for _, refresh in ipairs(bindRefreshers) do refresh() end
 	end)
+
+	-- Not a binding, but it belongs beside the Console key it governs: with
+	-- this off that key does nothing, and looking for the reason anywhere
+	-- other than next to the row is a waste of somebody's afternoon.
+	--
+	-- It also has to live OUTSIDE the console, because the console is the one
+	-- place you can no longer reach once it is off.
+	section("Controls", "Developer")
+	cvarToggle("Controls", "cl_developer", "Developer menu",
+		"Lets the console open. What it can change is still gated by " ..
+		"sv_cheats and by the server; this only decides whether the key works.")
 else
 	local warning = Kit.Label(controls,
 		"Input module not found -- keybinds unavailable.", C.danger, 13)
@@ -464,6 +482,117 @@ cvarSlider("Video", "cl_bobamt_lat", "Bob amount, lateral", nil, 0, 8, 0.1, two)
 cvarToggle("Video", "cl_bobCamera", "Bob the camera too", "GoldSrc behaviour.")
 
 section("Video", "Crosshair")
+
+--=====================================================================
+-- CROSSHAIR PREVIEW
+--=====================================================================
+-- Numbers alone are guesswork: nobody knows what a gap of 4 and a size of 7
+-- look like together until they close the menu and shoot something. This is
+-- the same crosshair, drawn from the same geometry function the real one
+-- uses -- see Crosshair.Layout -- so it cannot drift from what you get.
+--
+-- The spread is not simulated. The live crosshair opens with the weapon's
+-- actual cone, and faking that here would show a number the player cannot
+-- set; what the preview shows is the RESTING shape, which is what these
+-- sliders control.
+
+do
+	local Crosshair = ClientModules and ClientModules:FindFirstChild("Crosshair")
+	Crosshair = Crosshair and require(Crosshair)
+
+	local row = Instance.new("Frame")
+	row.BackgroundTransparency = 1
+	row.Size = UDim2.new(1, 0, 0, 132)
+	Kit.Order(pages["Video"], row)
+	row.Parent = pages["Video"]
+
+	local canvas = Instance.new("Frame")
+	canvas.AnchorPoint = Vector2.new(0.5, 0)
+	canvas.Position = UDim2.new(0.5, 0, 0, 4)
+	canvas.Size = UDim2.new(0, 260, 0, 120)
+	canvas.BackgroundColor3 = Color3.fromRGB(46, 52, 44)
+	canvas.BorderSizePixel = 0
+	canvas.ClipsDescendants = true
+	canvas.Parent = row
+	Kit.Corner(canvas, 6)
+	Kit.Stroke(canvas, C.line, 1, 0.35)
+
+	-- Something to be legible AGAINST. A crosshair on flat grey tells you
+	-- nothing about whether it disappears on a wall, and picking a colour is
+	-- most of what these settings are for.
+	local swatch = Instance.new("Frame")
+	swatch.BackgroundColor3 = Color3.fromRGB(120, 116, 104)
+	swatch.BorderSizePixel = 0
+	swatch.Position = UDim2.fromScale(0.5, 0)
+	swatch.Size = UDim2.fromScale(0.5, 1)
+	swatch.Parent = canvas
+
+	local bars = {}
+	for _, name in ipairs({ "top", "bottom", "left", "right", "dot" }) do
+		local bar = Instance.new("Frame")
+		bar.Name = name
+		bar.AnchorPoint = Vector2.new(0.5, 0.5)
+		bar.BorderSizePixel = 0
+		bar.ZIndex = 3
+		bar.Visible = false
+		bar.Parent = canvas
+
+		local outline = Instance.new("UIStroke")
+		outline.Color = Color3.new(0, 0, 0)
+		outline.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+		outline.Parent = bar
+
+		bars[name] = { frame = bar, outline = outline }
+	end
+
+	local function redraw()
+		for _, bar in pairs(bars) do bar.frame.Visible = false end
+		if Config.cl_crosshair == false then return end
+		if not Crosshair then return end
+
+		local thickness = Config.cl_crosshairthickness or 2
+		local length    = Config.cl_crosshairsize or 7
+		local gap       = Config.cl_crosshairgap or 4
+		local colour    = Config.cl_crosshaircolor or Color3.fromRGB(0, 255, 0)
+		local alpha     = 1 - (Config.cl_crosshairalpha or 1)
+		local outline   = Config.cl_crosshair_drawoutline and 1 or 0
+
+		for _, spec in ipairs(Crosshair.Layout(gap, length, thickness, Config.cl_crosshairdot)) do
+			local bar = bars[spec.name]
+			if bar then
+				bar.frame.Position = UDim2.new(0.5, spec.dx, 0.5, spec.dy)
+				bar.frame.Size = UDim2.fromOffset(spec.w, spec.h)
+				bar.frame.BackgroundColor3 = colour
+				bar.frame.BackgroundTransparency = alpha
+				bar.outline.Thickness = outline
+				bar.frame.Visible = true
+			end
+		end
+	end
+
+	if not Crosshair then
+		local warning = Kit.Label(canvas,
+			"Crosshair module not found -- no preview.", C.faint, 12)
+		warning.Size = UDim2.fromScale(1, 1)
+		warning.TextXAlignment = Enum.TextXAlignment.Center
+	end
+
+	-- Redrawn from the cvars whichever way they moved -- this panel, the
+	-- console, or a server override -- so the preview is never showing a
+	-- state the game is not in.
+	for _, cvar in ipairs({
+		"cl_crosshair", "cl_crosshairsize", "cl_crosshairgap",
+		"cl_crosshairthickness", "cl_crosshairalpha", "cl_crosshairdot",
+		"cl_crosshair_drawoutline", "cl_crosshaircolor",
+	}) do
+		if Config.Values[cvar] ~= nil then
+			Config.OnChange(cvar, redraw)
+		end
+	end
+
+	redraw()
+end
+
 
 cvarToggle("Video", "cl_crosshair", "Crosshair")
 cvarToggle("Video", "cl_dynamiccrosshair", "Opens while moving")
@@ -569,9 +698,12 @@ reset.LayoutOrder = 1
 
 local open = false
 
+local escapeListener   -- assigned below; declared here for hide()
+
 local function hide()
 	if not open then return end
 	open = false
+	if escapeListener then escapeListener:Disconnect() escapeListener = nil end
 	closePanel()
 end
 
@@ -583,12 +715,31 @@ done.LayoutOrder = 2
 -- OPEN / CLOSE
 --=====================================================================
 
-scrim.Activated:Connect(hide)
-
+-- DELIBERATELY NOT CLOSED by a click on the scrim, unlike the quit prompt.
+--
+-- The pointer leaves this panel constantly -- every slider drag that runs
+-- past the end of its bar ends outside it -- and losing a page of settings to
+-- a stray click is the most irritating thing a settings menu can do. It
+-- closes on Done, on Escape, and when the menu behind it closes.
+--
+-- The scrim still SWALLOWS the click, which is the other half of its job:
+-- without it a click beside the panel would reach the menu buttons behind.
 button.Activated:Connect(function()
 	if open then return end
 	open = true
 	openPanel()
+
+	escapeListener = UserInputService.InputBegan:Connect(function(input, processed)
+		if processed then return end
+		if input.KeyCode ~= Enum.KeyCode.Escape then return end
+
+		-- Escape is CaptureNextInput's cancel, and a rebind prompt is the one
+		-- place it must not also close the panel: you would press Escape to
+		-- back out of "press a key" and lose the whole page with it.
+		if capturing then return end
+
+		hide()
+	end)
 
 	-- Deferred one frame: the marker is positioned from the tab button's
 	-- ABSOLUTE placement, and on the first open the rail has not been laid
