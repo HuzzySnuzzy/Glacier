@@ -128,7 +128,34 @@ local function dampedSpring(value, rate, target, hz, damping, dt)
 	return value + rate * dt, rate
 end
 
-local function castParams(model)
+-- EVERYONE ELSE SITTING IN THIS CAR.
+--
+-- A passenger is parked at their seat, INSIDE the chassis, every frame -- and
+-- on the driver's machine they arrive as a remote Puppet, which is a solid,
+-- queryable R6 rig unless the server happened to spawn a custom model. So the
+-- depenetration pass found a body inside the car and shoved the car off it;
+-- the passenger, being bolted to the seat, came with it; and the next frame
+-- found the same overlap again. That feedback loop is the car "spazzing out"
+-- the moment a second player gets in, and it cannot happen with one occupant
+-- because the driver's own body and puppet were already excluded below.
+--
+-- Read off the SEAT ATTRIBUTES, which are the server's record of who is in
+-- what and replicate to everybody, so every client works this out the same
+-- way and nothing new has to go over the wire.
+--
+-- Excluding the RawBody covers the Puppet too: it is a child, and the filter
+-- is by descendant.
+local function addOccupants(model, seatCount, ignore)
+	for i = 1, seatCount do
+		local id = model:GetAttribute(("Seat%d"):format(i))
+		if type(id) == "number" and id ~= 0 and id ~= plr.UserId then
+			local body = workspace:FindFirstChild(id .. "RawBody")
+			if body then table.insert(ignore, body) end
+		end
+	end
+end
+
+local function castParams(model, seatCount)
 	local p = RaycastParams.new()
 	local ignore = { model }
 
@@ -136,6 +163,8 @@ local function castParams(model)
 	-- so leaving them in would have every suspension ray hit the driver.
 	if State.playerBody then table.insert(ignore, State.playerBody) end
 	if State.playerPuppet then table.insert(ignore, State.playerPuppet) end
+
+	if seatCount then addOccupants(model, seatCount, ignore) end
 
 	-- Dropped weapons, for the same reason the player hull ignores them: a
 	-- rifle on the road is a prop, not the road. Letting one into these casts
@@ -161,9 +190,9 @@ end
 -- The same ignore set for the overlap query the depenetration pass runs. It
 -- has to be a separate object: OverlapParams and RaycastParams are different
 -- types and GetPartBoundsInBox will not take the latter.
-local function castOverlapParams(model)
+local function castOverlapParams(model, seatCount)
 	local op = OverlapParams.new()
-	op.FilterDescendantsInstances = castParams(model).FilterDescendantsInstances
+	op.FilterDescendantsInstances = castParams(model, seatCount).FilterDescendantsInstances
 	op.FilterType = Enum.RaycastFilterType.Exclude
 	-- Bounded: a car in a dense scene can overlap a lot of bounding boxes, and
 	-- the narrow phase below only cares about the deepest contact anyway.
@@ -472,11 +501,18 @@ local function step(s, dt)
 
 	-- Rebuilt only when the ignore set actually changes. A RaycastParams per
 	-- step is an allocation per step, and this runs at sv_PhysicsHz.
-	if s.paramsBody ~= State.playerBody or s.paramsPuppet ~= State.playerPuppet then
-		s.params = castParams(s.model)
-		s.overlapParams = castOverlapParams(s.model)
+	--
+	-- seatsDirty is set by an attribute listener rather than polled here, for
+	-- the same reason: reading a seat attribute per seat per step to notice
+	-- something that changes twice a minute is the same waste in a cheaper
+	-- disguise.
+	if s.paramsBody ~= State.playerBody or s.paramsPuppet ~= State.playerPuppet
+		or s.seatsDirty then
+		s.params = castParams(s.model, s.seatCount)
+		s.overlapParams = castOverlapParams(s.model, s.seatCount)
 		s.paramsBody = State.playerBody
 		s.paramsPuppet = State.playerPuppet
+		s.seatsDirty = false
 	end
 
 	-- Cars fall at the same rate as everything else unless told otherwise.
@@ -1243,12 +1279,27 @@ local function startDriving(model, def, index)
 		rollAngle = 0,
 		pitchAngle = 0,
 		groundFrac = 0,
-		params = castParams(model),
-		overlapParams = castOverlapParams(model),
+		seatCount = #rig.seats,
+		params = castParams(model, #rig.seats),
+		overlapParams = castOverlapParams(model, #rig.seats),
 		paramsBody = State.playerBody,
 		paramsPuppet = State.playerPuppet,
 	}
 	accumulator = 0
+
+	-- WHO ELSE IS ABOARD, watched rather than polled.
+	--
+	-- The step rebuilds its cast filters when this fires, which is what keeps
+	-- a passenger who got in halfway through a drive out of the car's own
+	-- collision -- and, just as importantly, puts them back into it the
+	-- moment they get out and become a pedestrian again.
+	sim.seatConns = {}
+	for i = 1, #rig.seats do
+		table.insert(sim.seatConns,
+			model:GetAttributeChangedSignal(("Seat%d"):format(i)):Connect(function()
+				if sim then sim.seatsDirty = true end
+			end))
+	end
 
 	-- The ignition, once, on getting in. An event rather than a state, so it
 	-- fires here rather than being inferred inside the per-frame update.
@@ -1256,6 +1307,12 @@ local function startDriving(model, def, index)
 end
 
 local function stopDriving()
+	-- Disconnected explicitly: these are connections to a MODEL that outlives
+	-- the drive, so they would otherwise accumulate one set per car entered
+	-- and keep firing into a sim that no longer exists.
+	if sim and sim.seatConns then
+		for _, conn in ipairs(sim.seatConns) do conn:Disconnect() end
+	end
 	sim = nil
 	accumulator = 0
 end
