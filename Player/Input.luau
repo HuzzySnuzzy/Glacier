@@ -582,6 +582,48 @@ function Input.GetBindingList()
 	return out
 end
 
+-- The keys this command ships with. For a settings menu's per-bind Reset,
+-- which needs to restore ONE action rather than throw the whole table away --
+-- bind_defaults is the wrong tool when a player has customised nine keys and
+-- wants the tenth back.
+function Input.DefaultKeysFor(command)
+	local out = {}
+	for _, pair in ipairs(DEFAULT_BINDS) do
+		if pair[2] == command then table.insert(out, pair[1]) end
+	end
+	for _, pair in ipairs(GAMEPAD_DEFAULTS) do
+		if pair[2] == command then table.insert(out, pair[1]) end
+	end
+	return out
+end
+
+-- Put one command back to its shipped keys. Returns the keys it now has.
+--
+-- The command's CURRENT keys are cleared first, or a rebound action ends up
+-- answering to both the new key and the old one -- which is not "reset", it
+-- is "reset plus whatever you had".
+--
+-- A default key that some OTHER command has taken is claimed back, because
+-- that is what resetting this row means. The displaced command is left with
+-- its remaining keys, or none, which the menu shows honestly rather than
+-- quietly restoring in turn.
+function Input.ResetBind(command)
+	for _, keyName in ipairs(Input.GetKeysFor(command)) do
+		Input.Unbind(keyName)
+	end
+	for _, keyName in ipairs(Input.DefaultKeysFor(command)) do
+		Input.Bind(keyName, command)
+	end
+	return Input.GetKeysFor(command)
+end
+
+-- Clear every key on one command.
+function Input.ClearBind(command)
+	for _, keyName in ipairs(Input.GetKeysFor(command)) do
+		Input.Unbind(keyName)
+	end
+end
+
 function Input.SaveBindings()
 	return table.clone(binds)
 end

@@ -204,7 +204,7 @@ end
 
 local ROW_HEIGHT = 34
 
-function MenuKit.Row(parent, name, description)
+function MenuKit.Row(parent, name, description, slotWidth)
 	local C = MenuKit.C
 	local hasHelp = description ~= nil and description ~= ""
 
@@ -233,7 +233,7 @@ function MenuKit.Row(parent, name, description)
 	slot.BackgroundTransparency = 1
 	slot.AnchorPoint = Vector2.new(1, 0)
 	slot.Position = UDim2.new(1, 0, 0, 0)
-	slot.Size = UDim2.new(0, 210, 0, ROW_HEIGHT)
+	slot.Size = UDim2.new(0, slotWidth or 210, 0, ROW_HEIGHT)
 	slot.Parent = row
 
 	return row, slot
@@ -385,12 +385,43 @@ function MenuKit.Slider(slot, min, max, initial, step, format, onChange)
 	local value = math.clamp(initial or min, min, max)
 	format = format or function(v) return string.format("%.2f", v) end
 
-	local readout = MenuKit.Label(slot, format(value), C.warn, 13)
+	-- The readout is a TEXTBOX, not a label.
+	--
+	-- A slider is the wrong instrument for a value you already know: dragging
+	-- to exactly 0.31 on a bar a hundred pixels wide is a game of skill, and
+	-- someone moving from another shooter has a sensitivity figure they want
+	-- to type. The bar stays for exploring, the box for arriving.
+	--
+	-- ClearTextOnFocus so the whole thing is replaced rather than edited
+	-- around: nobody wants to backspace through "0.20" to get to "0.35".
+	local readout = Instance.new("TextBox")
+	readout.BackgroundColor3 = C.raised
+	readout.BackgroundTransparency = 1
+	readout.BorderSizePixel = 0
 	readout.AnchorPoint = Vector2.new(1, 0.5)
 	readout.Position = UDim2.new(1, 0, 0.5, 0)
-	readout.Size = UDim2.new(0, 54, 1, 0)
-	readout.TextXAlignment = Enum.TextXAlignment.Right
+	readout.Size = UDim2.new(0, 54, 0, 22)
 	readout.Font = Enum.Font.Code
+	readout.TextSize = 13
+	readout.TextColor3 = C.warn
+	readout.TextXAlignment = Enum.TextXAlignment.Right
+	readout.ClearTextOnFocus = true
+	readout.Text = format(value)
+	readout.Parent = slot
+	MenuKit.Corner(readout, 4)
+
+	local readoutStroke = MenuKit.Stroke(readout, C.line, 1, 1)
+
+	readout.MouseEnter:Connect(function()
+		MenuKit.Tween(readout, MenuKit.HOVER,
+			{ BackgroundTransparency = 0.4 })
+		MenuKit.Tween(readoutStroke, MenuKit.HOVER, { Transparency = 0.4 })
+	end)
+	readout.MouseLeave:Connect(function()
+		if readout:IsFocused() then return end
+		MenuKit.Tween(readout, MenuKit.HOVER, { BackgroundTransparency = 1 })
+		MenuKit.Tween(readoutStroke, MenuKit.HOVER, { Transparency = 1 })
+	end)
 
 	local track = Instance.new("TextButton")
 	track.AutoButtonColor = false
@@ -435,6 +466,33 @@ function MenuKit.Slider(slot, min, max, initial, step, format, onChange)
 
 		if notify and onChange then onChange(v) end
 	end
+
+	-- Typing commits on Enter or on clicking away, both of which arrive as
+	-- FocusLost. Anything that is not a number puts the old value back rather
+	-- than leaving the box holding text the cvar never received -- a readout
+	-- showing something the game is not doing is worse than a rejected edit.
+	--
+	-- The typed number goes through exactly the same clamp and snap as a
+	-- drag: `sensitivity 40` typed into the box has to land on the scale, or
+	-- the knob leaves the bar and the two halves of the control disagree.
+	readout.FocusLost:Connect(function()
+		local typed = tonumber((readout.Text:gsub("%s", "")))
+		if typed then
+			apply(typed, true, true)
+		end
+		-- Rewritten from `value` either way: on a good edit this reformats
+		-- 0.3 as "0.30", and on a bad one it restores what was there.
+		readout.Text = format(value)
+
+		MenuKit.Tween(readout, MenuKit.HOVER, { BackgroundTransparency = 1 })
+		MenuKit.Tween(readoutStroke, MenuKit.HOVER, { Transparency = 1 })
+	end)
+
+	readout.Focused:Connect(function()
+		MenuKit.Tween(readout, MenuKit.SNAP, { BackgroundTransparency = 0.2 })
+		MenuKit.Tween(readoutStroke, MenuKit.SNAP,
+			{ Transparency = 0, Color = C.accent })
+	end)
 
 	local dragging = false
 	local moveConn, endConn
@@ -500,6 +558,36 @@ function MenuKit.Slider(slot, min, max, initial, step, format, onChange)
 	end)
 
 	return function(v) apply(v, true, false) end
+end
+
+--=====================================================================
+-- COLOUR CHANNELS
+--=====================================================================
+-- A Color3 stores 0..1; everyone who has ever picked a colour thinks in
+-- 0..255. The conversion has to happen on the way in and on the way out of
+-- every channel edit, and getting it wrong by a rounding step is the kind of
+-- bug where dragging Red to 255 and back lands you on 254.
+--
+-- Here rather than in the settings script because it is arithmetic, and
+-- arithmetic in a GUI script is arithmetic nothing tests.
+
+function MenuKit.ColourBytes(colour)
+	return {
+		math.floor(colour.R * 255 + 0.5),
+		math.floor(colour.G * 255 + 0.5),
+		math.floor(colour.B * 255 + 0.5),
+	}
+end
+
+-- The same colour with ONE channel replaced. index is 1, 2 or 3.
+--
+-- Rebuilt from the colour handed in rather than from a remembered copy, so a
+-- change that arrived from somewhere else -- the console, the server --
+-- between two slider drags is not silently reverted by the next one.
+function MenuKit.WithChannel(colour, index, byte)
+	local rgb = MenuKit.ColourBytes(colour)
+	rgb[index] = math.clamp(math.floor(byte + 0.5), 0, 255)
+	return Color3.fromRGB(rgb[1], rgb[2], rgb[3])
 end
 
 --=====================================================================

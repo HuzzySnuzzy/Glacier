@@ -207,7 +207,12 @@ local function selectTab(name, animated)
 end
 
 local tabOrder = 0
-local function newTab(name)
+
+-- sub: a page that belongs UNDER the one above it rather than beside it.
+-- Indented and a size smaller, which is the whole of what "sub" has to mean
+-- in a rail this short -- a nested, collapsible tree for six pages would be
+-- more mechanism than the thing it organises.
+local function newTab(name, sub)
 	tabOrder += 1
 
 	local b = Instance.new("TextButton")
@@ -216,14 +221,26 @@ local function newTab(name)
 	b.BackgroundTransparency = 1
 	b.BorderSizePixel = 0
 	b.Text = ""
-	b.Size = UDim2.new(1, 0, 0, 32)
+	b.Size = UDim2.new(1, 0, 0, sub and 28 or 32)
 	b.LayoutOrder = tabOrder
 	b.Parent = rail
 	Kit.Corner(b, 5)
 
-	local l = Kit.Label(b, name, C.dim, 14)
-	l.Position = UDim2.new(0, 12, 0, 0)
-	l.Size = UDim2.new(1, -12, 1, 0)
+	local l = Kit.Label(b, name, C.dim, sub and 13 or 14)
+	l.Position = UDim2.new(0, sub and 26 or 12, 0, 0)
+	l.Size = UDim2.new(1, sub and -26 or -12, 1, 0)
+
+	if sub then
+		-- A short rule from the tab above, so the indent reads as nesting
+		-- rather than as a typo.
+		local tick = Instance.new("Frame")
+		tick.BackgroundColor3 = C.lineSoft
+		tick.BorderSizePixel = 0
+		tick.AnchorPoint = Vector2.new(0, 0.5)
+		tick.Position = UDim2.new(0, 15, 0.5, 0)
+		tick.Size = UDim2.new(0, 6, 0, 1)
+		tick.Parent = b
+	end
 
 	b.MouseEnter:Connect(function()
 		if current ~= name then
@@ -239,6 +256,31 @@ local function newTab(name)
 
 	tabs[name] = { button = b, label = l }
 	return newPage(name)
+end
+
+-- Tabs that only exist when cl_developer is on. Hidden rather than disabled,
+-- because a page of switches you cannot reach is clutter, not information --
+-- and the switch that brings them back is in Controls, which is never hidden.
+local devTabs = {}
+
+local function refreshDevTabs()
+	local on = Config.cl_developer ~= false
+	for _, name in ipairs(devTabs) do
+		local tab = tabs[name]
+		if tab then tab.button.Visible = on end
+	end
+
+	-- Sitting on a page that just disappeared, go somewhere that still
+	-- exists rather than leaving the body empty with no tab lit.
+	if not on then
+		for _, name in ipairs(devTabs) do
+			if current == name then
+				current = nil
+				selectTab("Controls", true)
+				break
+			end
+		end
+	end
 end
 
 --=====================================================================
@@ -314,6 +356,54 @@ local function cvarChoice(pageName, cvar, label, desc, options)
 	Config.OnChange(cvar, function(value) setWidget(value) end)
 end
 
+-- R, G and B as three sliders over ONE Color3 cvar.
+--
+-- A colour is one value to Config and three numbers to a person, and the gap
+-- between those is this helper. Each slider reads its own channel out of the
+-- live cvar and writes a whole new Color3 back with only that channel
+-- changed -- rebuilt from the CURRENT value each time rather than from a
+-- remembered one, so a console `cl_crosshaircolor 255 0 0` between two drags
+-- is not quietly undone by the next slider that moves.
+--
+-- 0..255 because that is what everyone else calls a colour channel, even
+-- though Color3 stores 0..1 and the conversion has to happen twice per edit.
+local function colourSliders(pageName, cvar, labels)
+	local page = pages[pageName]
+	if Config.Values[cvar] == nil then
+		warn(("[menusettings] no cvar %q -- rows skipped"):format(cvar))
+		return
+	end
+	track(pageName, cvar)
+
+	local setters = {}
+	local writing = false
+
+	local function byte(v) return string.format("%d", v) end
+
+	local startBytes = Kit.ColourBytes(Config[cvar])
+
+	for i = 1, 3 do
+		local _, slot = Kit.Row(page, labels[i])
+
+		setters[i] = Kit.Slider(slot, 0, 255, startBytes[i], 1, byte, function(v)
+			-- Latched across the write, because Config.Set fires OnChange
+			-- synchronously and the handler below would push all three
+			-- sliders back -- including this one, mid-drag, to the value it
+			-- just sent. The knob would fight the pointer.
+			writing = true
+			local ok, why = Config.Set(cvar, Kit.WithChannel(Config[cvar], i, v))
+			writing = false
+			if not ok then warn(("[menusettings] %s: %s"):format(cvar, why)) end
+		end)
+	end
+
+	Config.OnChange(cvar, function(value)
+		if writing then return end
+		local bytes = Kit.ColourBytes(value)
+		for i = 1, 3 do setters[i](bytes[i]) end
+	end)
+end
+
 local function section(pageName, name)
 	Kit.Section(pages[pageName], name)
 end
@@ -331,28 +421,69 @@ local function keyText(keys)
 	return table.concat(keys, ", ")
 end
 
-local function bindRow(entry)
-	local _, slot = Kit.Row(controls, entry.label)
+-- THREE CONTROLS PER ROW: the keys, Clear, Reset.
+--
+-- One button doing all of it was too clever. Left click to rebind and right
+-- click to clear is a thing you have to be told, and there was no way at all
+-- to put a single row back to its default -- the only reset was the page
+-- button, which throws away nine deliberate binds to recover the tenth.
+--
+--   keys    click to add an input, then press one
+--   Clear   every key off this action
+--   Reset   back to what the game shipped with, this row only
+local BIND_SLOT_W = 262
 
-	local b = Kit.Button(slot, "", "normal", nil)
-	b.AnchorPoint = Vector2.new(1, 0.5)
-	b.Position = UDim2.new(1, 0, 0.5, 0)
-	b.Size = UDim2.new(0, 150, 0, 28)
-	b.Font = Enum.Font.Code
+local function bindRow(entry)
+	local _, slot = Kit.Row(controls, entry.label, nil, BIND_SLOT_W)
+
+	local keysButton = Kit.Button(slot, "", "normal", nil)
+	keysButton.AnchorPoint = Vector2.new(0, 0.5)
+	keysButton.Position = UDim2.new(0, 0, 0.5, 0)
+	keysButton.Size = UDim2.new(0, 140, 0, 28)
+	keysButton.Font = Enum.Font.Code
+	keysButton.TextSize = 12
+
+	local clear = Kit.Button(slot, "Clear", "normal", nil)
+	clear.AnchorPoint = Vector2.new(0, 0.5)
+	clear.Position = UDim2.new(0, 146, 0.5, 0)
+	clear.Size = UDim2.new(0, 55, 0, 28)
+	clear.TextSize = 12
+
+	local reset = Kit.Button(slot, "Reset", "normal", nil)
+	reset.AnchorPoint = Vector2.new(0, 0.5)
+	reset.Position = UDim2.new(0, 207, 0.5, 0)
+	reset.Size = UDim2.new(0, 55, 0, 28)
+	reset.TextSize = 12
 
 	local function refresh()
+		-- Left alone mid-capture, or the "press a key" prompt is overwritten
+		-- by a refresh triggered from some other row's rebind.
 		if capturing == entry.command then return end
+
 		local keys = Input.GetKeysFor(entry.command)
-		b.Text = keyText(keys)
-		b.TextColor3 = (#keys == 0) and C.faint or C.text
+		keysButton.Text = keyText(keys)
+		keysButton.TextColor3 = (#keys == 0) and C.faint or C.text
+
+		-- Dimmed when there is nothing to undo. Both still WORK -- a disabled
+		-- button that silently does nothing is worse than one that no-ops --
+		-- but the colour says which rows have been touched.
+		local defaults = Input.DefaultKeysFor(entry.command)
+		local isDefault = (#keys == #defaults)
+		if isDefault then
+			for i, key in ipairs(defaults) do
+				if keys[i] ~= key then isDefault = false break end
+			end
+		end
+		reset.TextColor3 = isDefault and C.faint or C.text
+		clear.TextColor3 = (#keys == 0) and C.faint or C.text
 	end
 	refresh()
 
-	b.Activated:Connect(function()
+	keysButton.Activated:Connect(function()
 		if capturing then return end
 		capturing = entry.command
-		b.Text = "press a key..."
-		b.TextColor3 = C.warn
+		keysButton.Text = "press a key..."
+		keysButton.TextColor3 = C.warn
 
 		task.spawn(function()
 			-- CaptureNextInput goes modal on its own and returns nil on Escape
@@ -369,13 +500,23 @@ local function bindRow(entry)
 		end)
 	end)
 
-	-- Right-click clears every key on this action. HL made you bind a key to
-	-- something else to get rid of it; this is the same idea with one less step.
-	b.MouseButton2Click:Connect(function()
+	clear.Activated:Connect(function()
 		if capturing then return end
-		for _, key in ipairs(Input.GetKeysFor(entry.command)) do
-			Input.Unbind(key)
-		end
+		Input.ClearBind(entry.command)
+		refresh()
+	end)
+
+	reset.Activated:Connect(function()
+		if capturing then return end
+		Input.ResetBind(entry.command)
+		refresh()
+	end)
+
+	-- Kept from before, because it costs nothing and anyone who learned it
+	-- once should not have to unlearn it.
+	keysButton.MouseButton2Click:Connect(function()
+		if capturing then return end
+		Input.ClearBind(entry.command)
 		refresh()
 	end)
 
@@ -387,7 +528,6 @@ local bindRefreshers = {}
 if Input then
 	section("Controls", "Movement")
 
-	local shown = {}
 	for _, entry in ipairs(Input.GetBindingList()) do
 		-- Sectioned by the order numbers the command table already carries,
 		-- rather than by a second list here that would drift from it.
@@ -396,7 +536,6 @@ if Input then
 		if entry.order == 16 then section("Controls", "Interface") end
 
 		table.insert(bindRefreshers, bindRow(entry))
-		shown[entry.command] = true
 	end
 
 	-- Anything rebound from the console lands here too.
@@ -602,9 +741,18 @@ cvarSlider("Video", "cl_crosshairgap", "Gap", nil, 0, 20, 1,
 	function(v) return string.format("%d", v) end)
 cvarSlider("Video", "cl_crosshairthickness", "Thickness", nil, 1, 8, 1,
 	function(v) return string.format("%d", v) end)
-cvarSlider("Video", "cl_crosshairalpha", "Opacity", nil, 0, 1, 0.05, two)
 cvarToggle("Video", "cl_crosshairdot", "Centre dot")
 cvarToggle("Video", "cl_crosshair_drawoutline", "Outline")
+
+section("Video", "Crosshair colour")
+
+colourSliders("Video", "cl_crosshaircolor", { "Red", "Green", "Blue" })
+
+-- Alpha sits with R, G and B because that is where anyone looks for it, even
+-- though it is a separate cvar: Color3 has no alpha channel, and the game
+-- draws the crosshair's transparency from its own number.
+cvarSlider("Video", "cl_crosshairalpha", "Alpha",
+	"1 is solid, 0 is invisible.", 0, 1, 0.01, two)
 
 section("Video", "World")
 
@@ -643,6 +791,59 @@ cvarSlider("Network", "cl_interp", "Interpolation buffer",
 
 cvarToggle("Network", "cl_extrapolate", "Extrapolate",
 	"Guess ahead when a packet is late instead of freezing.")
+
+--=====================================================================
+-- DEBUG
+--=====================================================================
+-- A sub-tab of Network in the rail's order, and gated on cl_developer with
+-- the console: "developer menu" meaning the console but not the debug
+-- overlays would be a distinction nobody asked for.
+--
+-- These are all overlays and readouts. Nothing here changes how the game
+-- plays, which is why they are CLIENT cvars a player may set freely -- the
+-- things that WOULD change play (cl_spray_debug and friends) are CHEAT
+-- flagged, would be refused by Config.Set, and are deliberately not listed:
+-- a control that silently does nothing is worse than no control.
+
+newTab("Debug", true)
+table.insert(devTabs, "Debug")
+
+section("Debug", "Overlays")
+
+cvarToggle("Debug", "cl_debugHud", "Debug HUD",
+	"Position, speed, stance and the rest, top left.")
+cvarToggle("Debug", "cl_debugGraph", "Frame graph")
+cvarSlider("Debug", "cl_debugGraphScale", "Graph ceiling",
+	"Studs per second at the top of the graph. 0 scales to whatever is happening.",
+	0, 400, 5, function(v) return string.format("%d", v) end)
+cvarToggle("Debug", "cl_debugWeapon", "Weapon panel",
+	"Spread, recoil and the state of the gun in your hands.")
+
+section("Debug", "In the world")
+
+cvarToggle("Debug", "cl_debugHull", "Draw collision hull",
+	"The box the movement code actually collides with, which is not the model.")
+cvarToggle("Debug", "cl_debugVectors", "Draw movement vectors",
+	"Velocity, wish direction and the ground normal.")
+cvarToggle("Debug", "cl_vehicle_debug", "Vehicle rays",
+	"Suspension casts and tyre forces on the car you are driving.")
+
+section("Debug", "Server")
+
+cvarToggle("Debug", "cl_serverDebug", "Server panel",
+	"What the server thinks is happening, beside what you think is.")
+cvarToggle("Debug", "cl_serverDebugPlayers", "Per-player rows",
+	"Needs sv_cheats on the server; without it the server sends nothing.")
+cvarSlider("Debug", "cl_serverDebugScale", "Server panel scale", nil,
+	0.5, 2, 0.05, two)
+
+section("Debug", "Movement")
+
+cvarToggle("Debug", "mv_debugStops", "Warn on lost speed",
+	"Prints to the console when a collision eats most of your velocity.")
+
+refreshDevTabs()
+Config.OnChange("cl_developer", refreshDevTabs)
 
 --=====================================================================
 -- FOOTER
