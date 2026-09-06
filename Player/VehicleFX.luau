@@ -44,6 +44,12 @@
 -- Names are matched case-insensitively and by CONTAINMENT, so "EngineSound",
 -- "engine_loop" and "Engine" all work. Art gets named by hand and this should
 -- not be a spelling test.
+--
+-- EVERY SOUND HERE BECOMES A VOICE. A voice plays the artist's Sound through
+-- the Advanced Audio API, so a car is occluded by the wall it is behind and
+-- picks up the reverb of the tunnel it is in, like every movement sound
+-- already does -- and falls back to driving the Sound itself where the API is
+-- not there. See Player/AudioVoice; nothing below knows which it got.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VehicleDefs = require(ReplicatedStorage:WaitForChild("VehicleDefs"))
@@ -195,6 +201,23 @@ local function fxOf(model, rig)
 		fx.wheelSmoke[i] = findByName(wheel.holder or wheel.part, "smoke", "ParticleEmitter")
 	end
 
+	-- SOUNDS BECOME VOICES.
+	--
+	-- A voice plays the artist's Sound through the Advanced Audio API, so it
+	-- goes through the engine's acoustic simulation the same way every
+	-- movement sound already does -- and falls back to driving the Sound
+	-- itself where the API is not available, so nothing below has to know
+	-- which it got. See Player/AudioVoice.
+	--
+	-- It also owns the artist's volume and pitch, which is why the
+	-- remembering that used to live here does not any more.
+	fx.engine = AudioVoice.From(fx.engine)
+	fx.screech = AudioVoice.From(fx.screech)
+	fx.backfireSound = AudioVoice.From(fx.backfireSound)
+	fx.turboSpool = AudioVoice.From(fx.turboSpool)
+	fx.bov = AudioVoice.From(fx.bov)
+	fx.engineStart = AudioVoice.From(fx.engineStart)
+
 	-- The rates the artist set are the loud end; everything below scales
 	-- toward zero from them, so tuning the look stays in Studio.
 	fx.baseRates = {}
@@ -206,45 +229,6 @@ local function fxOf(model, rig)
 		pipe.baseBackfire = pipe.backfire and rememberedRate(pipe.backfire, 24) or 0
 		pipe.baseBackfireSmoke = pipe.backfireSmoke
 			and rememberedRate(pipe.backfireSmoke, 40) or 0
-	end
-
-	-- The screech is a LOOP whose volume is the effect, so the artist's volume
-	-- is the loud end the same way their Rate is. Captured before anything
-	-- here touches it, or the first quiet frame would become the new maximum
-	-- and the sound would fade away over the session.
-	if fx.engine then
-		-- Same reasoning as the rates: remembered on the instance, because
-		-- this code overwrites PlaybackSpeed every frame and a rebuilt rig
-		-- would otherwise read last frame's pitch as the artist's.
-		local saved = fx.engine:GetAttribute("FXBasePitch")
-		if saved == nil then
-			saved = fx.engine.PlaybackSpeed
-			fx.engine:SetAttribute("FXBasePitch", saved)
-		end
-		fx.enginePitch = saved
-	end
-
-	if fx.screech then
-		local saved = fx.screech:GetAttribute("FXBaseVolume")
-		if saved == nil then
-			saved = fx.screech.Volume
-			fx.screech:SetAttribute("FXBaseVolume", saved)
-		end
-		fx.screechVolume = saved
-		fx.screechPitch = fx.screech.PlaybackSpeed
-		fx.screech.Volume = 0
-	end
-	-- The spool is a LOOP whose volume is the effect, exactly like the
-	-- screech, so the artist's volume is its loud end.
-	if fx.turboSpool then
-		local saved = fx.turboSpool:GetAttribute("FXBaseVolume")
-		if saved == nil then
-			saved = fx.turboSpool.Volume
-			fx.turboSpool:SetAttribute("FXBaseVolume", saved)
-		end
-		fx.spoolVolume = saved
-		fx.spoolPitch = fx.turboSpool.PlaybackSpeed
-		fx.turboSpool.Volume = 0
 	end
 
 	for i, emitter in pairs(fx.wheelSmoke) do
@@ -297,7 +281,7 @@ end
 -- than a factor of four, is what made a loop already recorded at high revs
 -- sound like a motorway in first gear.
 local function enginePitch(fx, def, rpm)
-	return (fx.enginePitch or 1) * VehicleDefs.EnginePitch(def, rpm)
+	return fx.engine.basePitch * VehicleDefs.EnginePitch(def, rpm)
 end
 
 --=====================================================================
@@ -321,14 +305,12 @@ function VehicleFX.Update(model, rig, state, deltaTime)
 	--------------------------------------------------------------
 	if fx.engine then
 		local rpm = state.rpm or def.idleRpm
-		fx.engine.PlaybackSpeed = enginePitch(fx, def, rpm)
+		fx.engine:SetPitch(enginePitch(fx, def, rpm))
+		fx.engine:SetVolume(fx.engine.baseVolume)
 
-		-- Started here rather than assumed: a Sound left not-playing in the
+		-- Started here rather than assumed: a sound left not-playing in the
 		-- model would otherwise be silent forever with no clue why.
-		if not fx.engine.IsPlaying then
-			fx.engine.Looped = true
-			fx.engine:Play()
-		end
+		fx.engine:Resume()
 	end
 
 	--------------------------------------------------------------
@@ -360,7 +342,6 @@ function VehicleFX.Update(model, rig, state, deltaTime)
 	-- already-playing Sound does nothing, and two fast upshifts is exactly
 	-- when you want to hear two bangs.
 	if fx.backfireSound and state.backfired then
-		fx.backfireSound.TimePosition = 0
 		fx.backfireSound:Play()
 	end
 
@@ -392,18 +373,15 @@ function VehicleFX.Update(model, rig, state, deltaTime)
 	if fx.turboSpool then
 		local spool = turbo and math.clamp(state.spool or 0, 0, 1) or 0
 
-		fx.turboSpool.Volume = (fx.spoolVolume or 0.5) * spool
+		fx.turboSpool:SetVolume(fx.turboSpool.baseVolume * spool)
 		-- Rising as it comes on song. A spool that only got louder sounds
 		-- like a volume knob; the pitch is what makes it sound like it is
 		-- spinning up.
-		fx.turboSpool.PlaybackSpeed = (fx.spoolPitch or 1) * (0.75 + spool * 0.5)
+		fx.turboSpool:SetPitch(fx.turboSpool.basePitch * (0.75 + spool * 0.5))
 
 		if spool > 0.02 then
-			if not fx.turboSpool.IsPlaying then
-				fx.turboSpool.Looped = true
-				fx.turboSpool:Play()
-			end
-		elseif fx.turboSpool.IsPlaying then
+			fx.turboSpool:Resume()
+		elseif fx.turboSpool:IsPlaying() then
 			fx.turboSpool:Stop()
 		end
 	end
@@ -412,7 +390,6 @@ function VehicleFX.Update(model, rig, state, deltaTime)
 	-- a lift can land inside one sample's length, and the second one is the
 	-- one you were listening for.
 	if fx.bov and turbo and state.bov then
-		fx.bov.TimePosition = 0
 		fx.bov:Play()
 	end
 
@@ -457,17 +434,14 @@ function VehicleFX.Update(model, rig, state, deltaTime)
 		-- and the effect stops meaning anything.
 		local voice = slipVoice(slip)
 
-		fx.screech.Volume = (fx.screechVolume or 0.5) * voice
+		fx.screech:SetVolume(fx.screech.baseVolume * voice)
 		-- Rising slightly as it gets worse, so a slow slide and a full lock-up
 		-- are told apart by more than loudness.
-		fx.screech.PlaybackSpeed = (fx.screechPitch or 1) * (0.9 + voice * 0.3)
+		fx.screech:SetPitch(fx.screech.basePitch * (0.9 + voice * 0.3))
 
 		if voice > 0 then
-			if not fx.screech.IsPlaying then
-				fx.screech.Looped = true
-				fx.screech:Play()
-			end
-		elseif fx.screech.IsPlaying then
+			fx.screech:Resume()
+		elseif fx.screech:IsPlaying() then
 			fx.screech:Stop()
 		end
 	end
@@ -485,6 +459,14 @@ function VehicleFX.Report(model, rig)
 	if not (model and rig and rig.chassis) then return { "[fx] no rig" } end
 
 	local fx = fxOf(model, rig)
+	-- A voice knows whether it is going through the acoustic simulation or
+	-- driving a plain Sound, and that is the first thing you want to know
+	-- when a car sounds flat.
+	local function voice(v)
+		if not v then return "MISSING" end
+		return ("%s  volume %.2f"):format(v:Describe(), v.baseVolume)
+	end
+
 	local function state(instance, rate)
 		if not instance then return "MISSING" end
 		if rate then
@@ -499,14 +481,12 @@ function VehicleFX.Report(model, rig)
 
 	local lines = {
 		("[fx] %s"):format(model.Name),
-		("  engine        %s"):format(state(fx.engine)),
-		("  backfire snd  %s"):format(state(fx.backfireSound)),
-		("  screech snd   %s%s"):format(state(fx.screech),
-			fx.screech and (" (volume %.2f)"):format(fx.screechVolume or 0) or ""),
-		("  turbo spool   %s%s"):format(state(fx.turboSpool),
-			fx.turboSpool and (" (volume %.2f)"):format(fx.spoolVolume or 0) or ""),
-		("  bov snd       %s"):format(state(fx.bov)),
-		("  engine start  %s"):format(state(fx.engineStart)),
+		("  engine        %s"):format(voice(fx.engine)),
+		("  backfire snd  %s"):format(voice(fx.backfireSound)),
+		("  screech snd   %s"):format(voice(fx.screech)),
+		("  turbo spool   %s"):format(voice(fx.turboSpool)),
+		("  bov snd       %s"):format(voice(fx.bov)),
+		("  engine start  %s"):format(voice(fx.engineStart)),
 		("  turbo on car  %s"):format(rig.def.turbo == true and "yes" or "no"),
 		("  exhausts      %d"):format(#fx.exhausts),
 	}
@@ -539,7 +519,6 @@ function VehicleFX.Start(model, rig)
 	local fx = fxOf(model, rig)
 	if not fx.engineStart then return end
 
-	fx.engineStart.TimePosition = 0
 	fx.engineStart:Play()
 end
 
@@ -549,14 +528,14 @@ function VehicleFX.Quiet(rig)
 	local fx = rig and rig.fx
 	if not fx then return end
 
-	if fx.engine and fx.engine.IsPlaying then fx.engine:Stop() end
+	if fx.engine then fx.engine:Stop() end
 	if fx.screech then
-		fx.screech.Volume = 0
-		if fx.screech.IsPlaying then fx.screech:Stop() end
+		fx.screech:SetVolume(0)
+		fx.screech:Stop()
 	end
 	if fx.turboSpool then
-		fx.turboSpool.Volume = 0
-		if fx.turboSpool.IsPlaying then fx.turboSpool:Stop() end
+		fx.turboSpool:SetVolume(0)
+		fx.turboSpool:Stop()
 	end
 
 	for _, pipe in ipairs(fx.exhausts) do

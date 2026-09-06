@@ -537,6 +537,16 @@ Define("snd_hitsound_volume", 1, FCVAR.CLIENT)
 Define("snd_impact_volume", 1, FCVAR.CLIENT)
 
 Define("snd_acousticSim", true, FCVAR.CLIENT)             -- per-emitter/listener acoustic sim
+
+-- Whether Sounds authored in a model are converted to the Advanced Audio API
+-- at runtime, so they go through the acoustic simulation rather than Roblox's
+-- flat 3D panner. See Player/AudioVoice.
+--
+-- On, because it is strictly better audio for art that does not have to
+-- change. Off is the escape hatch: a client old enough to lack the classes
+-- falls back on its own, but a bug in the conversion would otherwise need a
+-- rebuild to get around.
+Define("snd_audioApi", true, FCVAR.CLIENT)
 Define("snd_broadcast", true, FCVAR.CHEAT)                -- mute your own network audio
 Define("cl_strideLength", 4.5, FCVAR.CLIENT)              -- studs travelled per networked footstep event
 
