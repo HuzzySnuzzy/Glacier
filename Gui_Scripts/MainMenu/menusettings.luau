@@ -1,0 +1,2 @@
+-- opens a half life like settings menu (mouse sens, raw mouse, keybinds tab, all the shenanigans.)
+-- ui = menu / Settings / menusettings.lua

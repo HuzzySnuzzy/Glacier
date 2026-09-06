@@ -1,4 +1,4 @@
--- ui = menu / Resume / LocalScript.lua
+-- ui = menu / Resume / menuresume.lua
 
 const ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RequestSpawn = ReplicatedStorage:WaitForChild("RequestSpawn")

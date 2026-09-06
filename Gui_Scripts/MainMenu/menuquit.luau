@@ -1,0 +1,2 @@
+-- opens a prompt for are you sure? y/n (kicks player if y)
+-- ui = menu / Quit / menuquit.lua
