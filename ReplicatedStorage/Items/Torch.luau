@@ -26,7 +26,14 @@ local Torch = {
 	lightRange = 34,
 	lightColor = Color3.fromRGB(255, 190, 120),
 
-	viewmodelAnims = {},
+	-- Two one-shots for one action, because striking a torch and putting it
+	-- out do not look the same. Which one plays is decided by the hook, from
+	-- the state it just wrote -- see OnUse.
+	viewmodelAnims = {
+		Idle  = { id = "", looped = true },
+		Light = { id = "", looped = false },
+		Snuff = { id = "", looped = false },
+	},
 	sounds = {},
 }
 
@@ -36,6 +43,15 @@ Torch.server = {
 	-- the inventory push ItemServer sends straight after.
 	OnUse = function(plr, item, ctx)
 		item.data.lit = not item.data.lit
+
+		-- ANIMATED FROM THE SERVER, not predicted, and for two reasons that
+		-- both matter here. Which pose is right depends on what the toggle
+		-- landed on, and only this line knows that. And a torch being struck
+		-- is something other people should see -- ctx.Animate reaches every
+		-- client's copy of this player, where a prediction reaches only the
+		-- hands of the person holding it.
+		ctx.Animate(item.data.lit and "Light" or "Snuff")
+
 		return "keep"
 	end,
 }

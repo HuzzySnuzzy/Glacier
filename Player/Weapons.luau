@@ -309,19 +309,48 @@ local function beginUse(s)
 	State.useEndTime = State.gameTime + math.max(tonumber(s.useTime) or 0, 0.2)
 
 	local hook = ItemRegistry.ClientHook(s, "OnUseStart")
+	local played = false
+
 	if hook then
 		local ok, err = pcall(hook, Inventory.Active(State), {
 			stats = s,
 			slot = State.activeSlot,
+
+			-- THE ITEM'S OWN ANIMATION, by whatever name it gave it.
+			--
+			-- An item may call its poses anything -- Bite, Swig, Chop -- and
+			-- the whole point is that the engine has never heard of them, so
+			-- there is nothing to look up: the hook says which, because the
+			-- hook is the thing that knows what the item just did.
+			--
+			-- Handed in rather than reached for. Visuals is a client module
+			-- under Player and items live in ReplicatedStorage, so an item
+			-- cannot require it -- and should not: this is the entire surface
+			-- an item is given, which is what keeps it a surface.
+			PlayAnim = function(name, fade, speed)
+				if type(name) ~= "string" or name == "" then return end
+				played = true
+				Visuals.PlayAnim(name, fade or 0.05, speed)
+			end,
+
+			PlaySound = function(key)
+				if type(key) ~= "string" or key == "" then return end
+				Sounds.Push("weapon", key)
+			end,
 		})
 		if not ok then
 			warn("[Weapons] OnUseStart error on " .. tostring(s.name) .. ": " .. tostring(err))
 		end
 	end
 
-	-- Both guarded the way Inspect is: an item with no Use pose or no Use
-	-- sound is a normal item, not a misconfigured one.
-	if s.viewmodelAnims and s.viewmodelAnims.Use then
+	-- The DEFAULT, and only if the hook did not choose for itself. An item
+	-- that played its own Bite must not also get the generic Use on top --
+	-- two one-shots in the same frame means the second cuts the first off,
+	-- which reads as the animation being broken.
+	--
+	-- Guarded the way Inspect is: an item with no Use pose is a normal item,
+	-- not a misconfigured one.
+	if not played and s.viewmodelAnims and s.viewmodelAnims.Use then
 		Visuals.PlayAnim("Use", 0.05)
 	end
 	if s.sounds and s.sounds.Use then

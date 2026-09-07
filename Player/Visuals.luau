@@ -430,7 +430,7 @@ function Visuals.SetupViewmodel(viewmodel)
 
 	State.vmTracks = loadTrackSet(animator, AnimDefs.VIEWMODEL, Enum.AnimationPriority.Movement)
 	State.vmWeaponTracks = loadTrackSet(animator,
-		(State.currentWeaponStats and State.currentWeaponStats.viewmodelAnims) or {},
+		AnimDefs.ViewmodelSet(State.currentWeaponStats),
 		Enum.AnimationPriority.Action2)
 
 	local idle = State.vmTracks.Idle
@@ -924,7 +924,7 @@ local function updateViewmodelWeapon(viewmodel)
 		destroyTrackSet(State.vmWeaponTracks)
 		State.vmTracks = loadTrackSet(animator, AnimDefs.VIEWMODEL, Enum.AnimationPriority.Movement)
 		State.vmWeaponTracks = loadTrackSet(animator,
-			(State.currentWeaponStats and State.currentWeaponStats.viewmodelAnims) or {},
+			AnimDefs.ViewmodelSet(State.currentWeaponStats),
 			Enum.AnimationPriority.Action2)
 
 		local idle = State.vmTracks.Idle

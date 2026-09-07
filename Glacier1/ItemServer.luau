@@ -23,6 +23,13 @@
 --   client = { OnUseStart = ..., OnRender = ... }
 --       prediction and presentation. Never trusted, never waited for.
 --
+-- ANIMATION. Both sides can play one, and they are for different things.
+-- ctx.PlayAnim on the client is a PREDICTION -- it runs the instant the key
+-- goes down, before anything has been decided, which is what makes it feel
+-- immediate. ctx.Animate here runs on the DECISION: it knows whether the
+-- bandage was actually applied, and it reaches everyone rather than only the
+-- person holding it. An item picks whichever matches what it is saying.
+--
 -- THE HOOK DOES NOT TOUCH THE INVENTORY. It returns a VERDICT and this
 -- applies it. An apple that removed itself from a slot would have to know
 -- about slots, pushes and the wire format -- and every item author would then
@@ -57,6 +64,18 @@ local function ensureRemote(name)
 end
 
 local UseItem = ensureRemote("UseItem")
+
+-- Resolved on USE rather than at load. Glacier1's main script creates this
+-- one and script order between server scripts is not guaranteed, so a
+-- WaitForChild here would either yield this whole script at startup or cache
+-- a nil for the session.
+local function animationRemote()
+	local found = ReplicatedStorage:FindFirstChild("AnimationSync")
+	if not found then
+		warn("[ItemServer] AnimationSync is missing -- item animations will not play")
+	end
+	return found
+end
 
 --=====================================================================
 -- COOLDOWNS
@@ -144,6 +163,16 @@ local function useItem(plr, slot, now)
 		return true, "keep"
 	end
 
+	-- ANIMATIONS THE HOOK ASKS FOR, collected rather than sent as they are
+	-- requested. A hook that throws halfway through has not done what it was
+	-- going to do, and playing the first half of its animation for an action
+	-- that never completed is worse than playing nothing.
+	--
+	-- Not filtered by the verdict, though: a hook that refuses may well want
+	-- to say so with a shake of the head, and it is the only thing that knows
+	-- whether it meant to.
+	local queued = {}
+
 	-- pcall'd because an item module is content, not engine code: a typo in
 	-- somebody's apple must not take down the use path for every other item
 	-- on the server.
@@ -151,6 +180,14 @@ local function useItem(plr, slot, now)
 		slot = slot,
 		stats = stats,
 		now = now,
+
+		-- The item's own animation, by whatever name it gave it. Played on
+		-- the user's viewmodel AND on their puppet for everybody else, which
+		-- is the half a client-side prediction cannot do.
+		Animate = function(name, fade, speed)
+			if type(name) ~= "string" or name == "" then return end
+			table.insert(queued, { track = name, fade = fade, speed = speed })
+		end,
 	})
 
 	if not ok then
@@ -159,9 +196,34 @@ local function useItem(plr, slot, now)
 		return false, "that item is broken"
 	end
 
+	-- Sent AFTER the hook returned, so a throw takes its animations with it.
+	--
+	-- Through AnimationSync, which already relays one-shots to every client
+	-- and already knows how to resolve a track set from the held item's name.
+	-- A second remote doing the same job differently is how the two drift.
+	local anim = (#queued > 0) and animationRemote() or nil
+	if anim then
+		for _, request in ipairs(queued) do
+			anim:FireAllClients(plr, {
+				track = request.track,
+				fade = request.fade,
+				speed = request.speed,
+				weapon = stats.name or item.class,
+				-- The owner's client normally ignores its own name coming back
+				-- off this relay, because it played that one-shot itself. This
+				-- says the server started it, so their viewmodel plays it too.
+				fromServer = true,
+			})
+		end
+	end
+
 	if verdict == false then
 		-- A refusal the item made on purpose -- no charges left, not hungry,
 		-- already lit. It said no, so it is not put on a timer for saying so.
+		--
+		-- Its animations went out above, deliberately: refusing IS something
+		-- the item chose to do, and shaking your head at an apple you are too
+		-- full for is exactly the case this channel is for.
 		return false, "refused"
 	end
 

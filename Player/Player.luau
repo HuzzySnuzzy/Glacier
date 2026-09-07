@@ -599,8 +599,22 @@ local function resolveDefs(packet)
 end
 
 AnimationSync.OnClientEvent:Connect(function(plr, packet)
-	if plr == Players.LocalPlayer then return end
 	if type(packet) ~= "table" then return end
+
+	if plr == Players.LocalPlayer then
+		-- Normally this is our own one-shot coming back off the relay, and we
+		-- played it before it ever left -- replaying it here would cut the
+		-- animation off and restart it a round trip late.
+		--
+		-- A SERVER-ORIGINATED one is the exception, and the only way an
+		-- item's server hook can reach our own viewmodel: nothing on this
+		-- client has played it. replicate = false, or acting on it would send
+		-- it straight back out and round the loop again.
+		if packet.fromServer then
+			Visuals.PlayAnim(packet.track, packet.fade, packet.speed, false)
+		end
+		return
+	end
 
 	local rawBody = workspace:FindFirstChild(plr.UserId .. "RawBody")
 	local puppet = rawBody and rawBody:FindFirstChild("Puppet")

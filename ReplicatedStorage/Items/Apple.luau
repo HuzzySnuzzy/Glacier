@@ -29,8 +29,34 @@ return {
 	-- and the floor on how often this can be used.
 	useTime = 1.1,
 
-	viewmodelAnims = {},
+	-- THE POSES, by whatever name this item wants to call them.
+	--
+	--   Idle    the holding pose. Looped, and played whenever nothing else
+	--           is: this is what "holding an apple" looks like.
+	--   Use     the default the engine plays when the trigger is pulled and
+	--           the item does not choose something else itself.
+	--   Bite    a name the engine has never heard of, played by the hook
+	--           below. Anything not looped is treated as a one-shot and gets
+	--           the priority that lets it override the held pose.
+	--
+	-- Blank ids are deliberate stubs: the track is skipped silently, so an
+	-- item is playable before anybody has animated it.
+	viewmodelAnims = {
+		Idle = { id = "", looped = true },
+		Use  = { id = "", looped = false },
+		Bite = { id = "", looped = false },
+	},
 	sounds = {},
+
+	client = {
+		-- PREDICTION. Runs the instant the key goes down, before the server
+		-- has ruled on anything, which is what makes eating feel immediate.
+		-- Playing it here rather than declaring Use and leaving it is the
+		-- difference between "the engine's use animation" and this item's.
+		OnUseStart = function(item, ctx)
+			ctx.PlayAnim("Bite")
+		end,
+	},
 
 	server = {
 		OnUse = function(plr, item, ctx)
