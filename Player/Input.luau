@@ -23,6 +23,7 @@ local RunService = game:GetService("RunService")
 
 local Config = require(game:GetService("ReplicatedStorage"):WaitForChild("Config"))
 local State  = require(script.Parent.State)
+local Inventory = require(game:GetService("ReplicatedStorage"):WaitForChild("Inventory"))
 
 local plr = Players.LocalPlayer
 local cam = workspace.CurrentCamera
@@ -163,10 +164,6 @@ local COMMANDS = {
 	["+attack2"] = { order = 11, label = "Alt Fire",  button = true },
 	["+reload"]  = { order = 12, label = "Reload",    button = true },
 
-	["slot1"] = { order = 13, label = "Primary",   button = false },
-	["slot2"] = { order = 14, label = "Secondary", button = false },
-	["slot3"] = { order = 15, label = "Melee",     button = false },
-
 	["thirdperson"] = { order = 16, label = "Third Person", button = false },
 	-- Must survive modal or the console can be opened and never closed.
 	["toggleconsole"] = { order = 17, label = "Console", button = false, modalPassthrough = true },
@@ -183,13 +180,30 @@ local COMMANDS = {
 	["togglemenu"] = { order = 21, label = "Menu", button = false, modalPassthrough = true },
 }
 
+-- SLOT COMMANDS, generated from Inventory.SLOTS so adding a slot there gets
+-- it a command, a label and a place in the bind list without this file
+-- changing. There are four now -- primary, secondary, melee and the utility
+-- slot a torch or an apple goes in -- and there is no reason for this file to
+-- be the thing that has to know.
+--
+-- The orders sit BETWEEN 13 and 16 rather than continuing past them: the
+-- settings menu starts its Weapons section at exactly 13 and its Interface
+-- section at exactly 16, so a fourth slot taking order 16 would drag the
+-- Interface heading onto it.
+for index, slot in ipairs(Inventory.SLOTS) do
+	COMMANDS["slot" .. index] = {
+		order = 13 + (index - 1) / Inventory.SLOT_COUNT,
+		label = slot.key:sub(1, 1):upper() .. slot.key:sub(2),
+		button = false,
+	}
+end
+
 -- Ordered so bind_defaults and a fresh config write out predictably.
 local DEFAULT_BINDS = {
 	{ "w", "+forward" }, { "s", "+back" }, { "a", "+moveleft" }, { "d", "+moveright" },
 	{ "space", "+jump" }, { "c", "+duck" }, { "shift", "+speed" },
 	{ "x", "prone" }, { "ctrl", "dive" },
 	{ "mouse1", "+attack" }, { "mouse2", "+attack2" }, { "r", "+reload" },
-	{ "1", "slot1" }, { "2", "slot2" }, { "3", "slot3" },
 	-- Tilde is the console key everyone reaches for; F3 stays as a second one
 	-- for keyboards that make the backquote awkward.
 	{ "`", "toggleconsole" }, { "f3", "toggleconsole" },
@@ -197,6 +211,19 @@ local DEFAULT_BINDS = {
 	{ "e", "+use" }, { "g", "drop" },
 	{ "f1", "togglemenu" },
 }
+
+-- The number row, in slot order, inserted where the hand-written 1/2/3 used
+-- to be so a fresh config still writes out in the same shape. Stops at 9:
+-- there is no "10" key, and a tenth slot needs a key somebody chose.
+do
+	local at = 1
+	for i, entry in ipairs(DEFAULT_BINDS) do
+		if entry[2] == "+reload" then at = i + 1 break end
+	end
+	for index = math.min(Inventory.SLOT_COUNT, 9), 1, -1 do
+		table.insert(DEFAULT_BINDS, at, { tostring(index), "slot" .. index })
+	end
+end
 
 local GAMEPAD_DEFAULTS = {
 	{ "buttona", "+jump" }, { "buttonb", "+duck" }, { "buttonl3", "+speed" },
@@ -293,9 +320,11 @@ local function applyPressInner(name)
 	elseif name == "+reload" then
 		State.reloadRequested = true
 
-	elseif name == "slot1" then State.activeSlot = 1
-	elseif name == "slot2" then State.activeSlot = 2
-	elseif name == "slot3" then State.activeSlot = 3
+	elseif string.match(name, "^slot%d+$") then
+		local index = tonumber(string.match(name, "%d+"))
+		if index and index >= 1 and index <= Inventory.SLOT_COUNT then
+			State.activeSlot = index
+		end
 
 	elseif name == "+use" then
 		-- Consumed by Weapons, which owns the remote. Input stays free of

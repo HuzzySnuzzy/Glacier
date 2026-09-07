@@ -16,10 +16,42 @@ local WeaponRegistry = require(ReplicatedStorage:WaitForChild("WeaponRegistry"))
 
 local Inventory = {}
 
-Inventory.SLOT_PRIMARY   = 1
-Inventory.SLOT_SECONDARY = 2
-Inventory.SLOT_MELEE     = 3
-Inventory.SLOT_COUNT     = 3
+--=====================================================================
+-- THE SLOTS
+--=====================================================================
+-- ONE list, and everything else about slots is derived from it: the count,
+-- the numeric constants, the console spellings, the wire format's length and
+-- the order a loadout fills. Adding a slot is a line here and nothing else,
+-- which is the point -- the previous three hard-coded constants were fine
+-- while everything you could hold was a gun.
+--
+-- `key` is what a loadout spec calls the slot ({ primary = "AK47" }), and
+-- `aliases` are the extra spellings the console accepts.
+Inventory.SLOTS = {
+	{ key = "primary" },
+	{ key = "secondary", aliases = { "pistol" } },
+	{ key = "melee",     aliases = { "knife" } },
+	-- Where an item that is not a weapon goes: a torch, food, a tool. Named
+	-- for what it is FOR rather than what it is, because "the fourth slot"
+	-- stops being a useful name the moment there is a fifth.
+	{ key = "utility",   aliases = { "gear", "tool", "item" } },
+}
+
+Inventory.SLOT_COUNT = #Inventory.SLOTS
+
+-- Names, for messages. Built from the list rather than restated.
+Inventory.SLOT_NAMES = {}
+local NAME_TO_SLOT = {}
+
+for index, slot in ipairs(Inventory.SLOTS) do
+	Inventory.SLOT_NAMES[index] = slot.key
+	NAME_TO_SLOT[slot.key] = index
+	for _, alias in ipairs(slot.aliases or {}) do
+		NAME_TO_SLOT[alias] = index
+	end
+	-- SLOT_PRIMARY, SLOT_UTILITY and friends, so callers read as they did.
+	Inventory["SLOT_" .. slot.key:upper()] = index
+end
 
 --=====================================================================
 -- ITEMS
@@ -151,20 +183,6 @@ end
 --
 -- Numbers are accepted too, so a module can say slot = 2 if it prefers.
 
-Inventory.SLOT_NAMES = {
-	[Inventory.SLOT_PRIMARY]   = "primary",
-	[Inventory.SLOT_SECONDARY] = "secondary",
-	[Inventory.SLOT_MELEE]     = "melee",
-}
-
-local NAME_TO_SLOT = {
-	primary = Inventory.SLOT_PRIMARY,
-	secondary = Inventory.SLOT_SECONDARY,
-	pistol = Inventory.SLOT_SECONDARY,
-	melee = Inventory.SLOT_MELEE,
-	knife = Inventory.SLOT_MELEE,
-}
-
 -- "secondary" | 2 | "2" -> 2. Anything else (including "any" and nil) -> nil.
 function Inventory.SlotIndex(value)
 	if type(value) == "number" then
@@ -237,11 +255,12 @@ end
 function Inventory.ApplyLoadout(state, spec)
 	if type(spec) ~= "table" then return end
 
-	local byIndex = {
-		[Inventory.SLOT_PRIMARY]   = spec.primary   or spec[1],
-		[Inventory.SLOT_SECONDARY] = spec.secondary or spec[2],
-		[Inventory.SLOT_MELEE]     = spec.melee     or spec[3],
-	}
+	-- By slot KEY, or by position. Read off the slot list, so a loadout can
+	-- fill a slot that was added after this function was written.
+	local byIndex = {}
+	for index, slot in ipairs(Inventory.SLOTS) do
+		byIndex[index] = spec[slot.key] or spec[index]
+	end
 
 	local s = slots(state)
 	for i = 1, Inventory.SLOT_COUNT do
@@ -263,10 +282,10 @@ function Inventory.ApplyLoadout(state, spec)
 	-- Select the best slot the player actually has, rather than assuming 1.
 	local want = state.activeSlot
 	if not s[want] then
-		want = (s[Inventory.SLOT_PRIMARY]   and Inventory.SLOT_PRIMARY)
-			or (s[Inventory.SLOT_SECONDARY] and Inventory.SLOT_SECONDARY)
-			or (s[Inventory.SLOT_MELEE]     and Inventory.SLOT_MELEE)
-			or Inventory.SLOT_PRIMARY
+		want = Inventory.SLOT_PRIMARY
+		for i = 1, Inventory.SLOT_COUNT do
+			if s[i] then want = i break end
+		end
 	end
 	state.activeSlot = want
 
@@ -383,6 +402,8 @@ end
 -- in Visuals.Update, once the loadout path writes items directly.
 
 function Inventory.MigrateLegacy(state)
+	-- The three legacy string fields only ever covered the three original
+	-- slots; anything past them was never expressible this way.
 	local legacy = { state.primary, state.secondary, state.melee }
 	local s = slots(state)
 	local changed = false

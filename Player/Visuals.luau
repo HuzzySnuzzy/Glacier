@@ -28,6 +28,7 @@ local ViewBob  = require(script.Parent.ViewBob)
 local ViewSway = require(script.Parent.ViewSway)
 local Inventory = require(ReplicatedStorage:WaitForChild("Inventory"))
 local WeaponRegistry = require(ReplicatedStorage:WaitForChild("WeaponRegistry"))
+local ItemRegistry = require(ReplicatedStorage:WaitForChild("ItemRegistry"))
 
 local cam = workspace.CurrentCamera
 
@@ -943,6 +944,22 @@ local function updateViewmodelWeapon(viewmodel)
 	-- shoot from, and CS sets deploy time independently for the same reason.
 	local s = State.currentWeaponStats
 	State.equipEndTime = State.gameTime + ((s and s.equipTime) or 0)
+
+	-- THE ITEM'S OWN DRESSING, last, on the model that now exists.
+	--
+	-- A torch has to put a light on the thing in your hand, and only the item
+	-- knows that. Given the model rather than left to find it, because "find
+	-- the viewmodel" is a different answer on the puppet and on a dropped
+	-- pickup -- and the same hook is meant to serve all three as those learn
+	-- to call it.
+	local render = ItemRegistry.ClientHook(s, "OnRender")
+	if render then
+		local ok, err = pcall(render, weapon, Inventory.Active(State), "viewmodel")
+		if not ok then
+			warnOnce("render_" .. targetWeapon,
+				"OnRender error on '%s': " .. tostring(err), targetWeapon)
+		end
+	end
 end
 
 --=====================================================================

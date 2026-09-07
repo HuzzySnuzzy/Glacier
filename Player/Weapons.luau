@@ -15,11 +15,17 @@
 -- Both are callbacks rather than requires because Weapons already requires
 -- Visuals and Bullets, so a direct require either way would be circular.
 --
--- Per-weapon hooks (all optional) on the stats module:
+-- Per-weapon hooks (all optional), flat on the stats module. These are the
+-- WEAPON hooks and they predate the item split, so they stay where they are:
 --   OnFire(stats, ctx)     -- ctx.origin / ctx.direction; return false to veto
 --   OnReloadStart(stats)
 --   OnReloadEnd(stats)
 --   OnEquip(stats)
+--
+-- An ITEM's hooks live in stats.client / stats.server (see ItemRegistry).
+-- The trigger routes to whichever the item is: something with a fire rate is
+-- fired, and anything else that declares a use is USED -- one press, one
+-- request to the server, which is the only side that may act on it.
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -31,6 +37,7 @@ local Sounds  = require(script.Parent.Sounds)
 local Bullets = require(script.Parent.Bullets)
 local ViewSway = require(script.Parent.ViewSway)
 local Inventory = require(ReplicatedStorage:WaitForChild("Inventory"))
+local ItemRegistry = require(ReplicatedStorage:WaitForChild("ItemRegistry"))
 
 local ReloadWeapon = ReplicatedStorage:WaitForChild("ReloadWeapon", 10)
 -- Resolved on USE, not at load. WaitForChild here would cache a nil for the
@@ -70,6 +77,7 @@ local function busy()
 	local now = State.gameTime
 	if now < (State.equipEndTime or 0) then return true, "equipping" end
 	if State.isReloading then return true, "reloading" end
+	if now < (State.useEndTime or 0) then return true, "using" end
 	return false
 end
 
@@ -263,6 +271,53 @@ local function finishReload(s)
 end
 
 --=====================================================================
+-- USE
+--=====================================================================
+
+-- USING an item, as opposed to firing a weapon: eating, lighting a torch,
+-- applying a bandage.
+--
+-- The client's half is a window and an animation. THE SERVER DECIDES what
+-- actually happens, because everything an item is interesting for -- health,
+-- hunger, what is left in your slots -- is the server's to change, and a
+-- client that changed it would be changing a number nobody else can see.
+--
+-- Nothing here waits for the answer, and nothing here predicts one either. A
+-- consumed item comes back as an inventory push, through exactly the path a
+-- reload correction already takes; predicting the removal would mean undoing
+-- it on every refusal, and a refusal is the normal case for "not hungry".
+local function beginUse(s)
+	-- The window the animation plays in, and the reason busy() blocks a
+	-- second press: without it a held trigger sends one request per frame and
+	-- the server's cooldown becomes the only thing standing between an apple
+	-- and sixty remote calls a second.
+	State.useEndTime = State.gameTime + math.max(tonumber(s.useTime) or 0, 0.2)
+
+	local hook = ItemRegistry.ClientHook(s, "OnUseStart")
+	if hook then
+		local ok, err = pcall(hook, Inventory.Active(State), {
+			stats = s,
+			slot = State.activeSlot,
+		})
+		if not ok then
+			warn("[Weapons] OnUseStart error on " .. tostring(s.name) .. ": " .. tostring(err))
+		end
+	end
+
+	-- Both guarded the way Inspect is: an item with no Use pose or no Use
+	-- sound is a normal item, not a misconfigured one.
+	if s.viewmodelAnims and s.viewmodelAnims.Use then
+		Visuals.PlayAnim("Use", 0.05)
+	end
+	if s.sounds and s.sounds.Use then
+		Sounds.Push("weapon", "Use")
+	end
+
+	local use = remote("UseItem")
+	if use then use:FireServer(State.activeSlot) end
+end
+
+--=====================================================================
 -- UPDATE
 --=====================================================================
 
@@ -347,7 +402,7 @@ function Weapons.Update()
 		end
 	end
 	
-	-- ---- firing ----
+	-- ---- trigger ----
 	if isBusy or State.isDiving then return end
 
 	-- Sprinting lowers the weapon in most shooters; firing from it feels wrong
@@ -355,6 +410,21 @@ function Weapons.Update()
 	if State.isSprinting and Config.wp_noFireWhileSprinting ~= false then
 		return
 	end
+
+	-- WHAT THE TRIGGER MEANS for the thing in your hands. A weapon is fired;
+	-- an apple is used; a rock with neither is carried and does nothing.
+	--
+	-- Derived from the item's own numbers rather than a `kind` field it would
+	-- have to keep in step -- and checked BEFORE the shot path, which would
+	-- otherwise take an item with no fireRate straight into a division by a
+	-- rate of fire it does not have.
+	local action = ItemRegistry.Action(s)
+	if action == "use" then
+		-- Press only, never a held trigger: eating is not automatic fire.
+		if pressedThisFrame then beginUse(s) end
+		return
+	end
+	if action ~= "fire" then return end
 
 	local wantsShot = (s.isAuto and triggerDown) or pressedThisFrame
 	if not wantsShot then return end
@@ -384,6 +454,9 @@ end
 function Weapons.OnEquipped(s)
 	State.isReloading = false
 	State.nextFireTime = 0
+	-- Or swapping away mid-bite leaves the next weapon "using" for the rest
+	-- of the old item's window and refusing to fire.
+	State.useEndTime = 0
 	lastTriggerDown = true   -- swallow a held trigger across the swap
 
 	-- Switching mid-spray must not carry the index onto the new weapon: its
