@@ -141,6 +141,21 @@ function Weapons.PreRender()
 		return
 	end
 
+	-- A NON-WEAPON HAS NO RECOIL, and asking it for some is an error rather
+	-- than a zero: Recoil.step reads weapon.recoil.cooldownMul and
+	-- weapon.accuracy.recovery directly, both of which an apple simply does
+	-- not have. Published as zeroes instead, which is also what the crosshair
+	-- should be drawing -- there is no cone to show for a torch.
+	--
+	-- Nothing is lost by skipping the decay while a non-weapon is out:
+	-- OnEquipped resets the recoil state on every swap, so the burst you
+	-- fired before reaching for the apple is already gone by the time you
+	-- swap back.
+	if not (s.recoil and s.accuracy) then
+		clearRecoilPublish()
+		return
+	end
+
 	local st = recoilState()
 
 	-- Unconditional. Decay must run whether or not the player can currently
