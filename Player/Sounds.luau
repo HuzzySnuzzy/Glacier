@@ -32,6 +32,7 @@ local Workspace = game:GetService("Workspace")
 
 local Config = require(ReplicatedStorage:WaitForChild("Config"))
 local SoundKeys = require(ReplicatedStorage:WaitForChild("SoundKeys"))
+local AssetId = require(ReplicatedStorage:WaitForChild("AssetId"))
 local State = require(script.Parent.State)
 
 local Sounds = {}
@@ -57,7 +58,17 @@ local function pickSample(key)
 		idx = (idx % #def.ids) + 1
 	end
 	lastFootIndex = idx
-	return def.ids[idx], def
+	-- Normalised here rather than at each of the three players below: this is
+	-- the one place a SoundKeys id becomes a value, and SoundKeys is edited by
+	-- hand as often as a weapon module is.
+	return AssetId.Resolve(def.ids[idx]), def
+end
+
+local warned = {}
+local function warnOnce(key, msg, ...)
+	if warned[key] then return end
+	warned[key] = true
+	warn("[Sounds] " .. msg:format(...))
 end
 
 --------------------------------------------------------------------
@@ -111,11 +122,22 @@ local function acquire()
 end
 
 local function play(id, volume, pitch)
-	if not id or id == "" then return end
+	-- NORMALISED, the same way animation ids are. A weapon or item written
+	-- with a bare number here used to assign it straight onto the player and
+	-- play nothing -- no warning, no sound, nothing to go on.
+	local asset = AssetId.Resolve(id)
+	if not asset then
+		if not AssetId.IsBlank(id) then
+			warnOnce("badsound_" .. tostring(id),
+				"Unusable SoundId: %s -- expected an asset id, a number, or a " ..
+				"roblox.com link", tostring(id))
+		end
+		return
+	end
 	if Config.cl_soundsEnabled == false then return end
 
 	local p = acquire()
-	p.Asset = id
+	p.Asset = asset
 	p.Volume = math.clamp(volume * (Config.volume or 1), 0, 10)
 	p.PlaybackSpeed = math.clamp(pitch, 0.05, 20)
 	-- AudioPlayer:Play() resumes from TimePosition; Sound:Play() rewound.
@@ -437,7 +459,9 @@ function Sounds.Update(deltaTime)
 		local moving = State.isGrounded and speed > 1
 		local key = SoundKeys.StepFor(State.groundMaterial)
 		local def = SoundKeys.Defs[key]
-		local loopId = def and def.ids[1]
+		-- Read straight off the def rather than through pickSample, which
+		-- randomises; normalised here for the same reason it is there.
+		local loopId = def and AssetId.Resolve(def.ids[1])
 
 		if moving then
 

@@ -39,12 +39,14 @@ return {
 	--           below. Anything not looped is treated as a one-shot and gets
 	--           the priority that lets it override the held pose.
 	--
-	-- Blank ids are deliberate stubs: the track is skipped silently, so an
+	-- Ids may be written however you have them: the bare number the Toolbox
+	-- shows, a pasted roblox.com link, or the full rbxassetid:// string. A
+	-- BLANK id is a deliberate stub -- the track is skipped silently, so an
 	-- item is playable before anybody has animated it.
 	viewmodelAnims = {
-		Idle = { id = "", looped = true },
-		Use  = { id = "", looped = false },
-		Bite = { id = "", looped = false },
+		Idle = { id = 116630545706868, looped = true },
+		Use  = { id = 116630545706868, looped = false },
+		Bite = { id = 116630545706868, looped = false },
 	},
 	sounds = {},
 

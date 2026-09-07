@@ -22,6 +22,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config   = require(ReplicatedStorage:WaitForChild("Config"))
 local AnimDefs = require(ReplicatedStorage:WaitForChild("AnimDefs"))
+local AssetId = require(ReplicatedStorage:WaitForChild("AssetId"))
 local State    = require(script.Parent.State)
 local Sounds   = require(script.Parent.Sounds)
 local ViewBob  = require(script.Parent.ViewBob)
@@ -214,13 +215,20 @@ local function loadTrackSet(animator, defs, defaultPriority)
 	if not (animator and defs) then return out end
 
 	for name, def in pairs(defs) do
-		if type(def.id) ~= "string" or def.id == "" then
+		-- NORMALISED, not merely validated. A bare number is what the Toolbox
+		-- and the URL bar give you, so it is what people write; rejecting it
+		-- as malformed was technically true and no help at all.
+		local assetId = AssetId.Resolve(def.id)
+
+		if AssetId.IsBlank(def.id) then
 			-- Deliberate stub; skip silently.
-		elseif not def.id:match("^rbxassetid://%d+$") then
-			warnOnce("malformed_" .. name, "Malformed AnimationId for '%s': %s", name, tostring(def.id))
+		elseif not assetId then
+			warnOnce("malformed_" .. name,
+				"Unusable AnimationId for '%s': %s -- expected an asset id, " ..
+				"a number, or a roblox.com link", name, tostring(def.id))
 		else
 			local anim = Instance.new("Animation")
-			anim.AnimationId = def.id
+			anim.AnimationId = assetId
 			local ok, track = pcall(animator.LoadAnimation, animator, anim)
 
 			if ok and track then
@@ -228,7 +236,7 @@ local function loadTrackSet(animator, defs, defaultPriority)
 				pcall(function() track.Priority = def.priority or defaultPriority end)
 				out[name] = track
 
-				local capturedName, capturedId = name, def.id
+				local capturedName, capturedId = name, assetId
 				task.delay(5, function()
 					if trackAlive(track) and track.Length == 0 then
 						warnOnce("badasset_" .. capturedName,
@@ -238,7 +246,7 @@ local function loadTrackSet(animator, defs, defaultPriority)
 				end)
 			else
 				warnOnce("load_" .. name, "LoadAnimation failed for '%s' (%s): %s",
-					name, def.id, tostring(track))
+					name, assetId, tostring(track))
 			end
 		end
 	end
