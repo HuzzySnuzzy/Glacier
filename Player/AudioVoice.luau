@@ -117,12 +117,44 @@ end
 -- BUILD
 --=====================================================================
 
+-- WHERE AN EMITTER CAN ACTUALLY LIVE.
+--
+-- An AudioEmitter needs a position in the world, which means a BasePart or an
+-- Attachment on one. A Sound does not: Roblox happily plays one parented to a
+-- Folder, as a 2D sound with no falloff. So the obvious "host it on the
+-- Sound's parent" is wrong for the one layout artists reach for most -- a
+-- folder called Audio with all the car's sounds in it -- and it fails
+-- SILENTLY, because an emitter hanging off a Folder is not an error, it is
+-- just never heard. That is what a fan sound dropped into the model next to
+-- the engine turns into.
+--
+-- So: walk up to the nearest part. Stopping at the Model rather than walking
+-- out into Workspace, because a sound whose only part-shaped ancestor is the
+-- baseplate should be reported as unplaceable, not welded to the map.
+local function emitterHost(sound)
+	local node = sound.Parent
+	while node do
+		if node:IsA("Attachment") or node:IsA("BasePart") then return node end
+		-- The chassis, on a vehicle: Rig sets it as the PrimaryPart, and it
+		-- is the part the whole car is drawn from.
+		if node:IsA("Model") then return node.PrimaryPart end
+		node = node.Parent
+	end
+	return nil
+end
+
 local function buildGraph(sound, volume, pitch)
-	-- Hosted on the Sound's own parent, so the emitter is wherever the artist
-	-- put the Sound and moves with it. On these cars that is the chassis,
-	-- which is the part the whole vehicle is drawn from.
-	local host = sound.Parent
-	if not host then return nil end
+	-- The nearest part to where the artist put the Sound, so the emitter is
+	-- in the right place and moves with the car. On these vehicles that ends
+	-- up being the chassis whether the Sound sits on it directly or in a
+	-- folder beside it.
+	local host = emitterHost(sound)
+	if not host then
+		warn(("[AudioVoice] '%s' has no part to emit from -- it is not inside "
+			.. "a BasePart or a Model with a PrimaryPart, so it stays a plain "
+			.. "Sound"):format(sound:GetFullName()))
+		return nil
+	end
 
 	local attachmentName = sound.Name .. "_AudioSource"
 

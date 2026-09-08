@@ -2103,7 +2103,12 @@ Config.Command("vehicle_fx", {
 			return
 		end
 
-		ctx.reply(table.concat(VehicleFX.Report(model, rig), "\n"))
+		-- The LIVE numbers alongside the instances, when we have a sim to read
+		-- them from. A report that shows a fan sound was found says nothing
+		-- about why it is not making a noise; the coolant temperature beside
+		-- the thresholds does.
+		ctx.reply(table.concat(
+			VehicleFX.Report(model, rig, (sim and model == seatModel) and sim or nil), "\n"))
 	end,
 })
 

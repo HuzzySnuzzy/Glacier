@@ -548,7 +548,7 @@ end
 -- somewhere the search does not reach, produces a car that drives correctly
 -- and does nothing else, with no error anywhere to say why. This turns that
 -- into a question you can answer from the console.
-function VehicleFX.Report(model, rig)
+function VehicleFX.Report(model, rig, live)
 	if not (model and rig and rig.chassis) then return { "[fx] no rig" } end
 
 	local fx = fxOf(model, rig)
@@ -572,18 +572,79 @@ function VehicleFX.Report(model, rig)
 		return instance.Name
 	end
 
+	local def = rig.def
+	live = live or {}
+
 	local lines = {
 		("[fx] %s"):format(model.Name),
-		("  engine        %s"):format(voice(fx.engine)),
-		("  fan           %s"):format(voice(fx.fan)),
+	}
+
+	-- WHERE THE NUMBERS CAME FROM, before what they are.
+	--
+	-- "I changed the class and the car sounds identical" has never once been
+	-- the sound code. It is one of these three lines every time: the model is
+	-- not that class, VehicleDefs has never heard of the class and quietly
+	-- handed out sedan handling, or an attribute left on the model is beating
+	-- the class -- which is what attributes are FOR, and is invisible unless
+	-- something says so.
+	do
+		local class = model:GetAttribute("Class")
+		table.insert(lines, ("  class         %s%s"):format(
+			tostring(class or "(none set -- sedan handling)"),
+			(class and not VehicleDefs.IsClass(class))
+				and "  NOT IN VehicleDefs -- sedan handling" or ""))
+
+		local overrides = VehicleDefs.Overrides(model, def)
+		if #overrides == 0 then
+			table.insert(lines, "  overrides     none (the class is what you hear)")
+		else
+			local parts = {}
+			for _, entry in ipairs(overrides) do
+				table.insert(parts, ("%s=%s"):format(entry.name, tostring(entry.value)))
+			end
+			table.insert(lines, ("  overrides     %s"):format(table.concat(parts, ", ")))
+			table.insert(lines, "                (attributes on this model BEAT the class)")
+		end
+
+		-- The pitch curve, spelled out with the rpm range it is stretched
+		-- over -- because half of "the pitch settings do nothing" turns out
+		-- to be a redline that did not change either.
+		table.insert(lines, ("  engine note   %.0f-%.0f rpm  ->  pitch %.2f-%.2f  x base %.2f"):format(
+			def.idleRpm, def.redlineRpm,
+			VehicleDefs.EnginePitch(def, def.idleRpm),
+			VehicleDefs.EnginePitch(def, def.redlineRpm),
+			fx.engine and fx.engine.basePitch or 1))
+
+		if live.rpm then
+			table.insert(lines, ("  right now     %.0f rpm  ->  pitch %.3f"):format(
+				live.rpm, enginePitch(fx, def, live.rpm)))
+		end
+	end
+
+	table.insert(lines, ("  engine        %s"):format(voice(fx.engine)))
+	table.insert(lines, ("  fan           %s"):format(voice(fx.fan)))
+
+	-- The fan is the one effect that is CORRECTLY silent most of the time, so
+	-- "found, and not running" and "not found" look the same from the driver's
+	-- seat. Printing the thresholds beside the temperature is the difference
+	-- between a bug and a car that simply is not hot yet.
+	if live.coolantTemp then
+		table.insert(lines, ("  cooling       coolant %.0f  oil %.0f  fan %s at %.0f%%  (on %.0f / off %.0f)"):format(
+			live.coolantTemp, live.oilTemp or 0,
+			live.fanOn and "ON" or "off", (live.fanSpeed or 0) * 100,
+			def.fanOnTemp or 97, def.fanOffTemp or 92))
+	end
+
+	local rest = {
 		("  backfire snd  %s"):format(voice(fx.backfireSound)),
 		("  screech snd   %s"):format(voice(fx.screech)),
 		("  turbo spool   %s"):format(voice(fx.turboSpool)),
 		("  bov snd       %s"):format(voice(fx.bov)),
 		("  engine start  %s"):format(voice(fx.engineStart)),
-		("  turbo on car  %s"):format(rig.def.turbo == true and "yes" or "no"),
+		("  turbo on car  %s"):format(def.turbo == true and "yes" or "no"),
 		("  exhausts      %d"):format(#fx.exhausts),
 	}
+	for _, line in ipairs(rest) do table.insert(lines, line) end
 
 	-- Listed per pipe, because "exhausts 2" and a silent second one is the
 	-- shape of the bug this report exists to name.
