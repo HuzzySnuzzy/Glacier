@@ -81,7 +81,6 @@ end
 
 -- WHETHER YOU ARE IN THE GAME, from the world rather than from the menu.
 --
--- This is the fix for the third separate report of "Resume does nothing".
 -- The mode attribute is a CACHE of the last thing the server said, and the
 -- server does not always say it: with SHOW_UI_ON_RESPAWN off -- the shipped
 -- setting -- dying fires no ShowJoinUI at all, so the attribute is still
@@ -89,10 +88,16 @@ end
 -- back", which for a player with no body is closing the menu and nothing
 -- else. Press it while dead and the menu shuts on an empty world.
 --
--- A RawBody is the ground truth: the server owns it, it exists exactly when
--- you are alive, and no message has to arrive for this to be right.
+-- THROUGH GLACIER, which owns the engine's one definition of alive. The
+-- previous attempt at this asked whether a RawBody EXISTED, which is a
+-- different question with the same shape and the wrong answer: a corpse still
+-- has a RawBody -- that is what makes it a corpse -- so the menu went on
+-- believing a dead player was a live one and Resume went on doing nothing.
+--
+-- Everything that rule reads is a replicated instance or attribute, so the
+-- answer here is the same one the server would give.
 local function alive()
-	return Glacier.RawBody(plr) ~= nil
+	return Glacier.IsAlive(plr)
 end
 
 -- Kept in step with the world, because menuquit and menusettings read it and

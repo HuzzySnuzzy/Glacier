@@ -17,6 +17,10 @@ local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local Config = require(ReplicatedStorage:WaitForChild("Config"))
+-- Safe from here: Glacier requires nothing at load, and it reaches this module
+-- back through Registry rather than through a require -- so there is no cycle
+-- even though this script is what Glacier's lifecycle verbs resolve to.
+local Glacier = require(ReplicatedStorage:WaitForChild("Glacier"))
 local Health = require(script.Parent:WaitForChild("Health"))
 local Registry = require(script.Parent:WaitForChild("Registry"))
 local Inventory = require(ReplicatedStorage:WaitForChild("Inventory"))
@@ -603,20 +607,14 @@ function Lifecycle_API.Move(plr, cframe)
 	return true
 end
 
+-- THROUGH GLACIER, which owns the one definition of this in the engine.
+--
+-- The rule used to live here, and the main menu had its own -- which is how a
+-- menu ended up believing a corpse was a living player. Everything the rule
+-- reads is a replicated instance or attribute, so a client asking gets the
+-- same answer this does, which is the entire point of moving it.
 function Lifecycle_API.IsAlive(plr)
-	local body = findRawBody(plr)
-	if not body then return false end
-
-	local puppet = body:FindFirstChild("Puppet")
-	if not puppet then return false end
-
-	-- Attribute, not instance-existence. A corpse still has a RawBody.
-	if puppet:GetAttribute("Dead") == true then return false end
-
-	local hp = puppet:GetAttribute("Health")
-	if hp ~= nil and hp <= 0 then return false end
-
-	return true
+	return Glacier.Alive(findRawBody(plr))
 end
 
 Lifecycle_API.Killed = PlayerKilled.Event

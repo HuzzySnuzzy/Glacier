@@ -408,7 +408,41 @@ function Glacier.Spawn(plr, cframe)   return lifecycle().Spawn(plr, cframe) end
 function Glacier.Respawn(plr, team)   return lifecycle().Respawn(plr, team) end
 function Glacier.Unload(plr)          return lifecycle().Unload(plr) end
 function Glacier.Move(plr, cframe)    return lifecycle().Move(plr, cframe) end
-function Glacier.IsAlive(plr)         return lifecycle().IsAlive(plr) end
+-- ALIVE, and this is the ONLY definition of it in the engine.
+--
+-- It used to have three. The lifecycle checked an attribute on the Puppet;
+-- the main menu remembered whatever the server last told it; and a fix for
+-- THAT asked whether a RawBody existed. All three disagreed, and every
+-- "Resume does nothing" report has been two of them disagreeing -- the last
+-- one because a CORPSE STILL HAS A RAWBODY, which the lifecycle knew and the
+-- menu did not.
+--
+-- So it lives here, where both VMs can reach it, and it does not delegate:
+-- everything it reads is a replicated instance or a replicated attribute, so
+-- the client and the server compute the same answer from the same facts. The
+-- server's lifecycle calls this rather than keeping its own copy.
+--
+-- The RawBody is not the test. It is created once and outlives the player who
+-- was in it -- the corpse is the point of that -- so existence answers "has
+-- this player ever spawned", which is a different question and the one that
+-- was accidentally being asked.
+function Glacier.Alive(body)
+	if not body or not body.Parent then return false end
+
+	local puppet = body:IsA("Model") and body or body:FindFirstChild("Puppet")
+	if not puppet then return false end
+
+	if puppet:GetAttribute("Dead") == true then return false end
+
+	local hp = puppet:GetAttribute("Health")
+	if hp ~= nil and hp <= 0 then return false end
+
+	return true
+end
+
+function Glacier.IsAlive(plr)
+	return Glacier.Alive(Glacier.RawBody(plr))
+end
 function Glacier.Kill(plr, by, why)   return lifecycle().Kill(plr, by, why) end
 
 function Glacier.GiveLoadout(plr, spec)
