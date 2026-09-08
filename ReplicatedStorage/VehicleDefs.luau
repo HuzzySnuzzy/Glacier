@@ -352,10 +352,25 @@ VehicleDefs.Classes = {
 	},
 
 	-- Light, short wheelbase, low grip. Slides on purpose.
+	coupe = {
+		label      = "Coupe",
+		size       = Vector3.new(5.6, 2.2, 10.5),
+		mass       = 1150,
+		horsepower = 420,       -- and it backfires, being over the default threshold
+		topSpeed   = 112,
+		grip       = 31,
+		balance    = 0.38,
+		steerAngle = 38,
+		steerRate  = 4.4,       -- lighter car, quicker rack
+		understeer = 0.24,      -- and it pushes less than the sedan
+		bodyRoll   = 0.18,      -- 5.5 deg at its grip limit: flatter than the sedan
+	},
+
+	-- The test car: a model of the same name in ReplicatedStorage.Vehicles.
 	car = {
 		label      = "Car",
 		bodyPitch = 0.1,
-		enginePitchMin = 0.5,
+		enginePitchMin = 0.3,
 		Gears = 6,
 		HP = 450,
 		MaxSpeed = 170,
@@ -363,6 +378,8 @@ VehicleDefs.Classes = {
 		revScale = 0.5,
 		ShiftTime = 0.15,
 		Turbo = true,
+		heatRate     = 8.5, -- coolant temp gain
+		coolRate     = 50, -- radiator fan cooling rate when on.
 	},
 
 	-- Heavy, tall, understeers, rolls a lot. Slow to stop, which is the point.
@@ -401,7 +418,23 @@ function VehicleDefs.Get(class)
 
 	local def = {}
 	for k, v in pairs(DEFAULTS) do def[k] = v end
-	for k, v in pairs(raw) do def[k] = v end
+
+	-- ONE NAMING SCHEME, WHEREVER A SETTING IS WRITTEN.
+	--
+	-- A class table is typed by hand, and the names anybody reaches for are
+	-- the friendly ones -- HP, Redline, MaxSpeed, Turbo -- because those are
+	-- what Studio shows on the model and what the tuning panel lists. They
+	-- used to be copied in verbatim as keys nothing ever read, so a class
+	-- could declare 450 horsepower, six gears and a turbo and get none of
+	-- them, with nothing anywhere saying so.
+	--
+	-- Resolved through the SAME alias map the attributes use, so a name means
+	-- the same thing in a class table, on a model, and in the editor. See
+	-- also the load-time check below, which names anything that still
+	-- resolves to nothing rather than leaving it silent.
+	for k, v in pairs(raw) do
+		def[VehicleDefs.FieldFor(k, DEFAULTS) or k] = v
+	end
 	def.class = key
 
 	-- Aerodynamic drag is DERIVED, never authored: it is exactly the value at
@@ -1196,7 +1229,7 @@ function VehicleDefs.StepTemperature(def, coolant, oil, load, airflow, dt, runni
 	-- Airflow through the radiator. Standing still in traffic is how a real
 	-- car overheats, and without this the only thing that mattered would be
 	-- the throttle.
-	airflow = math.clamp(airflow or 0, 0, 1)
+	airflow = math.clamp(airflow or 0, 0, 1000)
 
 	-- Where the coolant would end up if this were held forever.
 	--
@@ -1244,7 +1277,7 @@ function VehicleDefs.StepTemperature(def, coolant, oil, load, airflow, dt, runni
 	-- a car in seconds and a cool-down lap takes minutes.
 	local rate = (target > coolant) and (def.heatRate or 9) or (def.coolRate or 2.2)
 	local span = math.max(ceiling - ambient, 1)
-	coolant += (target - coolant) * math.clamp(rate * dt / span, 0, 1)
+	coolant += (target - coolant) * math.clamp(rate * dt / span, 0, 10)
 
 	-- The oil chases the COOLANT rather than the load, offset by how much
 	-- hotter it runs. That is what makes it lag without needing its own idea
@@ -1482,6 +1515,41 @@ function VehicleDefs.TunableList(def)
 	return out
 end
 
+-- WHAT THIS PARTICULAR MODEL IS OVERRIDING, as a sorted list of
+-- { name, field, value }.
+--
+-- The one question a class that "does nothing" always turns out to be. An
+-- attribute set on a model BEATS the class -- that is the whole point of them
+-- -- so a car carrying a leftover RevScale from an afternoon in the tuning
+-- panel will keep sounding exactly the same however the class is rewritten,
+-- and nothing on screen says which of the two won. This is what the fx report
+-- prints so that it does.
+function VehicleDefs.Overrides(model, def)
+	if not model then return {} end
+	local attributes = model:GetAttributes()
+	if not attributes then return {} end
+
+	def = def or DEFAULTS
+
+	local out = {}
+	for name, value in pairs(attributes) do
+		local field = VehicleDefs.FieldFor(name, def)
+		if field and def[field] ~= nil and type(value) == type(def[field]) then
+			table.insert(out, { name = name, field = field, value = value })
+		end
+	end
+
+	table.sort(out, function(a, b) return a.name < b.name end)
+	return out
+end
+
+-- Whether VehicleDefs has actually heard of a class, as opposed to having
+-- quietly handed out sedan handling under its name. GetOrDerive is designed
+-- to never fail, which is right for driving and useless for diagnosis.
+function VehicleDefs.IsClass(class)
+	return VehicleDefs.Classes[string.lower(tostring(class or ""))] ~= nil
+end
+
 -- The field an attribute name sets, or nil if it sets nothing. The exact
 -- field name counts as its own alias.
 function VehicleDefs.FieldFor(name, def)
@@ -1661,6 +1729,53 @@ function VehicleDefs.RigRestHeight(rig)
 		return rig.size.Y * 0.5
 	end
 	return needed
+end
+
+-- CLASS NAMES ARE CASE-INSENSITIVE, INCLUDING THE ONE WRITTEN IN THIS FILE.
+--
+-- Get lowercases what it is ASKED for and always did. It did not lowercase
+-- what it was given, so a table written `Car = { ... }` -- which is exactly
+-- what anybody types beside a model called Car -- was unreachable: every
+-- lookup missed, fell through to GetOrDerive, and quietly handed out sedan
+-- handling under the name "car".
+--
+-- The failure has no symptom worth the name. The class is in the file, spelled
+-- correctly, with the right numbers in it, and the car drives -- it just
+-- drives like a sedan, and editing the class changes nothing at all. Half a
+-- day can go into "why does changing revScale do nothing" before anyone
+-- suspects the capital letter.
+do
+	local normalised = {}
+	for name, raw in pairs(VehicleDefs.Classes) do
+		local key = string.lower(tostring(name))
+		if normalised[key] then
+			warn(("[VehicleDefs] two classes differ only in case ('%s'); "
+				.. "one of them is being discarded"):format(key))
+		end
+		normalised[key] = raw
+	end
+	VehicleDefs.Classes = normalised
+end
+
+-- EVERY KEY IN EVERY CLASS TABLE HAS TO MEAN SOMETHING.
+--
+-- Class tables are merged through the alias map, so both `horsepower` and
+-- `HP` set the engine. A key that is NEITHER sets nothing at all, and a
+-- setting that silently does nothing is the most expensive kind of bug this
+-- file can have: the car drives, the number is right there in the source, and
+-- the only way to find out it was ignored is to measure the car.
+--
+-- Checked once, at require time, rather than in Get -- which runs per rig and
+-- would say the same thing a hundred times a session.
+for class, raw in pairs(VehicleDefs.Classes) do
+	for key in pairs(raw) do
+		if VehicleDefs.FieldFor(key, DEFAULTS) == nil then
+			warn(("[VehicleDefs] class '%s' sets '%s', which is not a vehicle "
+				.. "setting -- it will be ignored. Check the spelling against "
+				.. "the field names at the top of this file or the friendly "
+				.. "names in ATTRIBUTE_ALIASES."):format(class, tostring(key)))
+		end
+	end
 end
 
 --=====================================================================
