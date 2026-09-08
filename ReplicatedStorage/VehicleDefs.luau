@@ -352,7 +352,7 @@ VehicleDefs.Classes = {
 	},
 
 	-- Light, short wheelbase, low grip. Slides on purpose.
-	Car = {
+	car = {
 		label      = "Car",
 		bodyPitch = 0.1,
 		enginePitchMin = 0.5,
