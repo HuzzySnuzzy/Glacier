@@ -286,6 +286,21 @@ local function buildRow(entry, index)
 			return
 		end
 		send("set", entry.name, box.Text)
+
+		-- PUT THE LIVE VALUE BACK, immediately, rather than leaving what was
+		-- typed sitting in the box.
+		--
+		-- The edit has not happened yet -- it is a request, and the server
+		-- can refuse it: cheats off, not an admin, a number that is not a
+		-- number. Leaving the typed text there shows a value the car is not
+		-- using and makes the green override mark a lie, which is exactly how
+		-- "vedit does not apply changes" looks from the outside.
+		--
+		-- An ACCEPTED edit comes straight back through AttributeChanged and
+		-- redraws this row with the new number, so the only thing this costs
+		-- is a frame. A REFUSED one visibly snaps back, which is the feedback
+		-- that was missing entirely.
+		refreshRow(entry.name)
 	end)
 
 	clear.Activated:Connect(function() send("reset", entry.name) end)
@@ -312,8 +327,22 @@ local function rebuild()
 	local def = VehicleDefs.GetOrDerive(currentModel:GetAttribute("Class"))
 	local entries = VehicleDefs.TunableList(def)
 
-	subtitle.Text = ('<font color="#69B4FF">%s</font><font color="#7D828C">   %d settings   live, and saved with the model</font>')
-		:format(currentModel.Name, #entries)
+	-- WHETHER EDITS WILL EVEN BE TAKEN, said up front.
+	--
+	-- The server gates this on sv_cheats and on being an admin, the same bar
+	-- the weapon editor sits behind -- and sv_cheats is OFF by default. A
+	-- panel that opens, lists everything, accepts typing and silently drops
+	-- every edit is the worst possible way to communicate that.
+	--
+	-- The admin half cannot be checked from here (the list is the server's),
+	-- so this reports the half it can see and names the other.
+	local note = "live, and saved with the model"
+	if Config.sv_cheats ~= true then
+		note = "READ ONLY -- sv_cheats is 0, so the server will refuse edits"
+	end
+
+	subtitle.Text = ('<font color="#69B4FF">%s</font><font color="#7D828C">   %d settings   %s</font>')
+		:format(currentModel.Name, #entries, note)
 
 	for i, entry in ipairs(entries) do
 		buildRow(entry, i)
@@ -354,6 +383,12 @@ local function setOpen(open)
 		currentConn = nil
 	end
 end
+
+-- Or the panel keeps saying READ ONLY after somebody turns cheats on, which
+-- is the same failure in the other direction.
+Config.OnChange("sv_cheats", function()
+	if gui.Enabled and currentModel then rebuild() end
+end)
 
 closeButton.Activated:Connect(function() setOpen(false) end)
 resetButton.Activated:Connect(function()

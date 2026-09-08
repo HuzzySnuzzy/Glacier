@@ -319,6 +319,13 @@ RunService.RenderStepped:Connect(function(deltaTime)
 		-- shooting is a real feature and this is where it would go; it needs
 		-- a seated viewmodel pass first, not just this call back.
 		Debug.Update(deltaTime)
+
+		-- The crosshair still has to be MAINTAINED, and this is the reason
+		-- cl_vehicle_crosshair did nothing: skipping the update does not hide
+		-- the crosshair, it freezes it at whatever it was when you got in --
+		-- which is on. A setting that decides whether something is drawn is
+		-- worth nothing if the code that draws it never runs.
+		Crosshair.Update(sdt)
 		Sounds.Update(sdt)
 		return
 	end
