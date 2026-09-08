@@ -1668,9 +1668,22 @@ local function updateCamera(model, def, dt)
 		yaw = carYaw
 	end
 
-	local back = Vector3.new(-math.sin(yaw), 0, -math.cos(yaw))
+	-- BEHIND. HeadingFromYaw is the direction a yaw FACES, so the camera goes
+	-- the other way -- and this line had it written out longhand as
+	-- (-sin, 0, -cos), which is the heading itself. The camera therefore sat
+	-- in front of the car looking away from it.
+	--
+	-- It survived because free-look hid it: cameraX is the mouse's yaw and
+	-- has nothing to do with the car's, so you dragged until the car was in
+	-- shot and the sign never came up. Auto-centre is what drives the two
+	-- together, and the first thing it did was put the camera on the bonnet.
+	--
+	-- Through the shared helper rather than written out again. This engine
+	-- has now had this exact sign wrong five separate times, and every one of
+	-- them was a hand-written (-sin, 0, -cos) somewhere.
+	local behind = -VehicleDefs.HeadingFromYaw(yaw)
 	local focus = chassis.Position + Vector3.new(0, height * 0.45, 0)
-	local target = focus + back * dist + Vector3.new(0, height, 0)
+	local target = focus + behind * dist + Vector3.new(0, height, 0)
 
 	camPos = camPos and approach(camPos, target, lag, dt) or target
 
