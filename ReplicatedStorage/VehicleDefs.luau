@@ -352,18 +352,17 @@ VehicleDefs.Classes = {
 	},
 
 	-- Light, short wheelbase, low grip. Slides on purpose.
-	coupe = {
-		label      = "Coupe",
-		size       = Vector3.new(5.6, 2.2, 10.5),
-		mass       = 1150,
-		horsepower = 420,       -- and it backfires, being over the default threshold
-		topSpeed   = 112,
-		grip       = 31,
-		balance    = 0.38,
-		steerAngle = 38,
-		steerRate  = 4.4,       -- lighter car, quicker rack
-		understeer = 0.24,      -- and it pushes less than the sedan
-		bodyRoll   = 0.18,      -- 5.5 deg at its grip limit: flatter than the sedan
+	Car = {
+		label      = "Car",
+		bodyPitch = 0.1,
+		enginePitchMin = 0.5,
+		Gears = 6,
+		HP = 450,
+		MaxSpeed = 170,
+		Redline = 6500,
+		revScale = 0.5,
+		ShiftTime = 0.15,
+		Turbo = true,
 	},
 
 	-- Heavy, tall, understeers, rolls a lot. Slow to stop, which is the point.
