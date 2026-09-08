@@ -493,6 +493,22 @@ end
 --
 -- Idempotent by design: every reason to refuse is checked here, so calling it
 -- when there is nothing to do costs a few comparisons.
+-- One message per press, not two.
+--
+-- A single Resume raises the flag AND services the request directly, and the
+-- flag's Changed handler services it as well -- that duplication is deliberate
+-- (see the note above: neither path is reliable on its own) and is harmless
+-- because servicing is idempotent. Telling the player is not: it arrives
+-- twice, in their console, for one press.
+local lastToldAt = {}
+
+local function tellOnce(player, message)
+	local now = os.clock()
+	if lastToldAt[player] and now - lastToldAt[player] < 0.5 then return end
+	lastToldAt[player] = now
+	G.Tell(player, message)
+end
+
 function serviceSpawnRequest(player)
 	if player.Parent ~= Players then return end
 	if G.RawBody(player) then return end         -- already alive
@@ -505,6 +521,11 @@ function serviceSpawnRequest(player)
 		-- change, so it fires nothing. deployAll re-raises and services this
 		-- directly when the round starts.
 		setPlayerSpawnReq:Fire(player, false)
+		-- SAID, not merely done. A player who presses Resume and gets nothing
+		-- back has no way to tell a refusal from a broken button, and that is
+		-- most of what "Resume doesn't work" has meant every time it has been
+		-- reported.
+		tellOnce(player, "[spawn] the round is turning over -- you will deploy when it starts")
 		return
 	end
 
@@ -513,6 +534,7 @@ function serviceSpawnRequest(player)
 		-- Respawn timer still running. Drop the latch and let the death
 		-- handler re-raise it when the timer expires.
 		setPlayerSpawnReq:Fire(player, false)
+		tellOnce(player, ("[spawn] respawning in %.0fs"):format(until_ - os.clock()))
 		return
 	end
 
@@ -587,6 +609,7 @@ end)
 Players.PlayerRemoving:Connect(function(player)
 	joined[player]    = nil
 	pending[player]   = nil
+	lastToldAt[player] = nil
 	deadUntil[player] = nil
 end)
 

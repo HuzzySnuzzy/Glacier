@@ -25,7 +25,8 @@
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local Config = require(ReplicatedStorage:WaitForChild("Config"))
+local Config  = require(ReplicatedStorage:WaitForChild("Config"))
+local Glacier = require(ReplicatedStorage:WaitForChild("Glacier"))
 
 local plr = Players.LocalPlayer
 
@@ -74,12 +75,37 @@ local Input = ClientModules and require(ClientModules:WaitForChild("Input"))
 
 local MODE = "Mode"   -- attribute name, shared with menuquit and menusettings
 
-local function mode()
-	return gui:GetAttribute(MODE) or "pause"
-end
-
 local function setMode(value)
 	gui:SetAttribute(MODE, value)
+end
+
+-- WHETHER YOU ARE IN THE GAME, from the world rather than from the menu.
+--
+-- This is the fix for the third separate report of "Resume does nothing".
+-- The mode attribute is a CACHE of the last thing the server said, and the
+-- server does not always say it: with SHOW_UI_ON_RESPAWN off -- the shipped
+-- setting -- dying fires no ShowJoinUI at all, so the attribute is still
+-- reading "pause" from the spawn before. Resume in pause mode means "put me
+-- back", which for a player with no body is closing the menu and nothing
+-- else. Press it while dead and the menu shuts on an empty world.
+--
+-- A RawBody is the ground truth: the server owns it, it exists exactly when
+-- you are alive, and no message has to arrive for this to be right.
+local function alive()
+	return Glacier.RawBody(plr) ~= nil
+end
+
+-- Kept in step with the world, because menuquit and menusettings read it and
+-- would otherwise inherit the same staleness. Derived rather than remembered
+-- -- which is the whole point.
+local function syncMode()
+	local value = alive() and "pause" or "join"
+	if gui:GetAttribute(MODE) ~= value then setMode(value) end
+	return value
+end
+
+local function mode()
+	return gui:GetAttribute(MODE) or "pause"
 end
 
 setMode("join")   -- how a session starts: you have not spawned yet
@@ -157,7 +183,10 @@ local sentToken = 0
 button.Activated:Connect(function()
 	if not gui.Enabled then return end
 
-	if mode() == "join" then
+	-- DECIDED FROM THE WORLD. See alive(): the mode attribute goes stale on
+	-- every death the server does not announce, and trusting it is what made
+	-- Resume a button that closed the menu while you lay dead behind it.
+	if syncMode() == "join" then
 		if sent then return end
 		sent = true
 
@@ -198,12 +227,25 @@ end)
 --=====================================================================
 
 local function toggle()
-	-- The join screen is not dismissable. There is no game behind it yet, and
-	-- a player who closed it would be left looking at an empty world with no
-	-- way back except another server event.
-	if mode() == "join" then return end
-
-	if gui.Enabled then close() else open("pause") end
+	-- OPENING is always allowed. CLOSING is not.
+	--
+	-- The distinction matters and the single guard this replaces did not make
+	-- it: it refused the whole toggle in join mode, which was harmless only
+	-- because the mode was stale and read "pause" while you were dead. With
+	-- the mode telling the truth, that same guard stopped a dead player from
+	-- opening the menu at all -- so the key that is supposed to get you back
+	-- into the game did nothing.
+	--
+	-- The rule is about the CLOSE: there is no game behind the join screen,
+	-- and a player who dismissed it would be left looking at an empty world
+	-- with no way back except another server event -- which, when the server
+	-- has already said everything it is going to say, never comes.
+	if gui.Enabled then
+		if syncMode() == "join" then return end
+		close()
+	else
+		open(syncMode())
+	end
 end
 
 if Input then
