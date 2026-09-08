@@ -285,6 +285,33 @@ local function enginePitch(fx, def, rpm)
 end
 
 --=====================================================================
+-- IGNITION
+--=====================================================================
+
+-- How far before the end of the crank the engine comes in under it. About a
+-- fifth of a second: long enough to overlap audibly, short enough that the
+-- starter is clearly finishing rather than being talked over.
+local START_OVERLAP = 0.18
+
+-- A crank that never reports finishing must not silence the engine forever.
+-- Reached only when the sound's length is unknowable AND it claims to still
+-- be playing, which should not happen -- but "should not happen" is how a car
+-- ends up permanently silent with nothing in the log.
+local CRANK_TIMEOUT = 5
+
+local function cranking(fx)
+	local start = fx.engineStart
+	if not (start and fx.crankAt) then return false end
+
+	if os.clock() - fx.crankAt > CRANK_TIMEOUT then return false end
+
+	-- Remaining is 0 for a sound that has stopped, finished, or has not yet
+	-- said how long it is -- and all three mean the same thing here: there is
+	-- nothing left to wait for.
+	return start:Remaining() > START_OVERLAP
+end
+
+--=====================================================================
 -- UPDATE
 --=====================================================================
 
@@ -293,6 +320,7 @@ end
 -- the driver's own.
 --
 --   rpm, gear, throttle, slipFront, slipRear, grounded, shiftedUp, backfired
+--   wheelSlip   -- optional, one per wheel; the driver's own car only
 function VehicleFX.Update(model, rig, state, deltaTime)
 	if not (model and rig and rig.chassis) then return end
 
@@ -308,9 +336,21 @@ function VehicleFX.Update(model, rig, state, deltaTime)
 		fx.engine:SetPitch(enginePitch(fx, def, rpm))
 		fx.engine:SetVolume(fx.engine.baseVolume)
 
-		-- Started here rather than assumed: a sound left not-playing in the
-		-- model would otherwise be silent forever with no clue why.
-		fx.engine:Resume()
+		-- HELD OFF WHILE THE STARTER IS TURNING.
+		--
+		-- The loop used to start on the same frame the crank did, so the two
+		-- played over each other from the first sample and the ignition was
+		-- an idle with a noise on top of it.
+		--
+		-- Not a gap and not a fade, though. A real engine CATCHES while the
+		-- starter is still turning, so the loop comes in under the crank's
+		-- last fraction of a second and the crank's tail covers the join. A
+		-- gap reads as a cut; a fade reads as somebody turning a volume knob.
+		if not cranking(fx) then
+			-- Started here rather than assumed: a sound left not-playing in
+			-- the model would otherwise be silent forever with no clue why.
+			fx.engine:Resume()
+		end
 	end
 
 	--------------------------------------------------------------
@@ -404,11 +444,28 @@ function VehicleFX.Update(model, rig, state, deltaTime)
 	local rear = math.clamp(state.slipRear or 0, 0, 1)
 	local grounded = state.grounded ~= false
 
+	-- PER WHEEL when the sim gave us that, per END when it did not.
+	--
+	-- Only the driver's own car has the per-wheel numbers: an observed car is
+	-- drawn from a packet carrying the two end values, and widening the wire
+	-- format to carry four more floats per car per tick to smoke one tyre
+	-- differently at a distance is not a trade worth making. So the fallback
+	-- is not a degraded mode, it is the same behaviour this had before, and
+	-- it is what everybody else sees.
+	local perWheel = state.wheelSlip
+
 	for i, emitter in pairs(fx.wheelSmoke) do
 		local wheel = rig.wheels[i]
-		local slip = (wheel and wheel.front) and front or rear
+		local slip = perWheel and perWheel[i]
+		if not slip then
+			slip = (wheel and wheel.front) and front or rear
+		end
+		slip = math.clamp(slip, 0, 1)
 
 		-- A wheel in the air does not smoke, however hard the car is sliding.
+		-- Read per wheel where we can: with the per-wheel numbers, a wheel
+		-- off the ground already reports zero slip, so this only matters for
+		-- the end-value fallback.
 		local voice = grounded and slipVoice(slip) or 0
 
 		-- SQUARE ROOT, because a tyre either smokes or it does not. Scaling
@@ -517,8 +574,12 @@ function VehicleFX.Start(model, rig)
 	if not (model and rig and rig.chassis) then return end
 
 	local fx = fxOf(model, rig)
-	if not fx.engineStart then return end
 
+	-- Recorded even when there is no crank sound, so the timeout below has a
+	-- clock to measure from and the engine is never gated on a nil.
+	fx.crankAt = os.clock()
+
+	if not fx.engineStart then return end
 	fx.engineStart:Play()
 end
 
@@ -527,6 +588,12 @@ end
 function VehicleFX.Quiet(rig)
 	local fx = rig and rig.fx
 	if not fx then return end
+
+	-- Or getting straight back in inherits the last drive's ignition clock
+	-- and the engine either waits for a crank that is not playing or starts
+	-- under one that is.
+	fx.crankAt = nil
+	if fx.engineStart then fx.engineStart:Stop() end
 
 	if fx.engine then fx.engine:Stop() end
 	if fx.screech then

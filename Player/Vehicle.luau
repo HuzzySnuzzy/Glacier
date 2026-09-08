@@ -245,6 +245,14 @@ local function probeSuspension(s)
 				front = wheel.front,
 				anchor = wheel.offset,
 				distance = hit.Distance,
+				-- WHAT THIS WHEEL IS ON. Per contact, not per car: two wheels
+				-- on tarmac and two in the grass is a car that pulls to one
+				-- side, and one grip number for the whole vehicle cannot say
+				-- that. The instance rides along because a debug readout that
+				-- says "Grass" is half an answer without saying which part.
+				material = hit.Material,
+				instance = hit.Instance,
+				grip = VehicleDefs.GripFor(hit.Material, def.surfaceGrip),
 			}
 			-- Measured BEFORE the clamp above throws it away. This is what
 			-- the bump stop needs, and clamping compression to 1 hides it.
@@ -499,6 +507,15 @@ local function step(s, dt)
 
 	local def = s.def
 
+	-- RETUNED from the model's attributes, once, on the first step after one
+	-- changed. In place on the rig, so the effects layer and anything else
+	-- holding it sees the same numbers without being told.
+	if s.tuningDirty then
+		s.tuningDirty = false
+		s.def = VehicleDefs.Retune(s.rig, s.model)
+		def = s.def
+	end
+
 	-- Rebuilt only when the ignore set actually changes. A RaycastParams per
 	-- step is an allocation per step, and this runs at sv_PhysicsHz.
 	--
@@ -544,6 +561,39 @@ local function step(s, dt)
 	-- 2. SUSPENSION
 	--------------------------------------------------------------
 	local contacts, groundNormal, groundFrac, deepest, penetration = probeSuspension(s)
+
+	--------------------------------------------------------------
+	-- 2a. WHAT THE CAR IS STANDING ON
+	--------------------------------------------------------------
+	-- Averaged per END rather than per car, because the ends are what the
+	-- grip model is already split into -- and because the interesting cases
+	-- are asymmetric down the length of the car, not across it: the fronts
+	-- reaching tarmac while the rears are still in the grass is a car that
+	-- suddenly has steering and no drive.
+	--
+	-- A wheel in the AIR contributes nothing rather than counting as 1.
+	-- Averaging air in as full grip would mean a car cresting a hill briefly
+	-- gripped better on the two wheels it had left.
+	local frontSurface, frontCount = 0, 0
+	local rearSurface, rearCount = 0, 0
+
+	for i, contact in ipairs(s.rig.wheels) do
+		local hit = contacts[i]
+		if hit then
+			if hit.front then
+				frontSurface, frontCount = frontSurface + hit.grip, frontCount + 1
+			else
+				rearSurface, rearCount = rearSurface + hit.grip, rearCount + 1
+			end
+		end
+	end
+
+	-- 1 when an end is entirely airborne, which is the neutral value: the
+	-- grip that end contributes is already scaled to zero by groundFrac.
+	s.surfaceFront = (frontCount > 0) and (frontSurface / frontCount) or 1
+	s.surfaceRear = (rearCount > 0) and (rearSurface / rearCount) or 1
+	s.surface = ((frontCount + rearCount) > 0)
+		and ((frontSurface + rearSurface) / (frontCount + rearCount)) or 1
 
 	--------------------------------------------------------------
 	-- 2b. BUMP STOP
@@ -677,6 +727,27 @@ local function step(s, dt)
 	s.lastThrottle = math.max(throttleAxis, 0)
 
 	--------------------------------------------------------------
+	-- 3d. TEMPERATURE
+	--------------------------------------------------------------
+	-- Two numbers that move the way an engine's do. Nothing reads them back
+	-- into the physics on purpose -- see the note on the def fields.
+	--
+	-- LOAD is what the engine is being ASKED for, which is throttle and revs
+	-- together: a car held against the redline in neutral is working as hard
+	-- as one doing it at speed. AIRFLOW is the other half, and it is road
+	-- speed rather than engine speed, because what cools a radiator is air
+	-- going through it. Sitting still with the throttle open is how a real
+	-- engine cooks, and this is the whole of why.
+	local revFrac = math.clamp((s.rpm - def.idleRpm)
+		/ math.max(def.redlineRpm - def.idleRpm, 1), 0, 1)
+	local heatLoad = math.clamp(math.max(throttleAxis, 0) * 0.6 + revFrac * 0.4, 0, 1)
+	local airflow = math.clamp(roadAbs / math.max(def.topSpeed * 0.5, 1), 0, 1)
+
+	s.coolantTemp, s.oilTemp = VehicleDefs.StepTemperature(
+		def, s.coolantTemp, s.oilTemp, heatLoad, airflow, dt)
+	s.overheating = VehicleDefs.Overheating(def, s.coolantTemp, s.oilTemp)
+
+	--------------------------------------------------------------
 	-- 4. LONGITUDINAL
 	--------------------------------------------------------------
 	local accel = Vector3.zero
@@ -760,6 +831,13 @@ local function step(s, dt)
 		local frontGrip = limit * (1 - transfer * def.loadTransfer)
 		local rearGrip  = limit * (1 + transfer * def.loadTransfer)
 
+		-- WHAT THE TYRES ARE ON. Applied per end, after the load split and
+		-- before the understeer term, because a surface changes how much grip
+		-- there IS -- it does not change how the weight moves between the
+		-- axles or how the front washes out with speed.
+		frontGrip *= s.surfaceFront or 1
+		rearGrip *= s.surfaceRear or 1
+
 		-- The front washes out with speed. A car that corners as hard at 90
 		-- as it does at 20 feels weightless however heavy the numbers say it
 		-- is; this is the push that makes speed cost something.
@@ -789,12 +867,66 @@ local function step(s, dt)
 			return math.max(magnitude - available, 0) / available
 		end
 
+		-- The same curve for a demand that is not the lateral one. Split out
+		-- rather than given a default argument, so neither caller can quietly
+		-- start measuring the other's demand.
+		local function saturation2(demandFor, available)
+			if available <= 1e-3 then return 1 end
+			return math.max(demandFor - available, 0) / available
+		end
+
 		s.slipFront = saturation(frontGrip)
 		s.slipRear = saturation(rearGrip)
 		-- One number for the HUD and the old callers: whichever end is worse.
 		s.slip = math.max(s.slipFront, s.slipRear)
+
+		--------------------------------------------------------------
+		-- 5b. PER WHEEL
+		--------------------------------------------------------------
+		-- The end values above are what the CAR does; these are what each
+		-- corner does, and the difference is only interesting when the four
+		-- are not on the same thing. One wheel dropping into the grass on the
+		-- exit of a corner is a real and common event, and an effects layer
+		-- reading the end value smokes both tyres on that axle for it.
+		--
+		-- Derived from the end rather than modelled separately: this wheel
+		-- has the end's grip, scaled by how its own surface compares to the
+		-- end's average. On matched surfaces that ratio is 1 and every wheel
+		-- reports exactly what its end does, which is the behaviour this
+		-- replaces and the thing it must not change.
+		local wheelSlip = s.wheelSlip
+		if not wheelSlip then
+			wheelSlip = {}
+			s.wheelSlip = wheelSlip
+		end
+
+		-- The longitudinal demand, shared by every driven wheel. A wheel on
+		-- ice under full power spins even going in a straight line, which the
+		-- lateral term alone can never say.
+		local longDemand = math.abs(longEffort)
+
+		for i in ipairs(s.rig.wheels) do
+			local contact = contacts[i]
+			if not contact then
+				-- Airborne. Not sliding -- there is nothing to slide on --
+				-- and an effects layer that smoked a wheel in the air would
+				-- be smoking against nothing.
+				wheelSlip[i] = 0
+			else
+				local endGrip = contact.front and frontGrip or rearGrip
+				local endSurface = (contact.front and s.surfaceFront or s.surfaceRear) or 1
+				local share = endGrip * (contact.grip / math.max(endSurface, 0.01))
+
+				local lateral = saturation(share)
+				local longitudinal = saturation2(longDemand, share)
+				wheelSlip[i] = math.min(math.max(lateral, longitudinal), 4)
+			end
+		end
 	else
 		s.slip, s.slipFront, s.slipRear = 0, 0, 0
+		if s.wheelSlip then
+			for i in ipairs(s.wheelSlip) do s.wheelSlip[i] = 0 end
+		end
 	end
 
 	--------------------------------------------------------------
@@ -1301,6 +1433,22 @@ local function startDriving(model, def, index)
 			end))
 	end
 
+	-- LIVE TUNING. Every attribute on the model is a knob, and changing one
+	-- while the car is moving retunes it on the next step rather than on the
+	-- next time somebody gets in.
+	--
+	-- AttributeChanged, not a per-name signal: the point is that ALL of them
+	-- work, and a list of names here would be a third place to keep in step
+	-- with the alias table.
+	--
+	-- Marked rather than applied, because this fires once per attribute and a
+	-- panel dragging a slider writes several in a frame. Retuning inside the
+	-- handler would rebuild the def per keystroke; the step does it once.
+	table.insert(sim.seatConns, model.AttributeChanged:Connect(function(name)
+		-- The seat record is not tuning, and it already has its own handler.
+		if sim and not name:match("^Seat%d+$") then sim.tuningDirty = true end
+	end))
+
 	-- The ignition, once, on getting in. An event rather than a state, so it
 	-- fires here rather than being inferred inside the per-frame update.
 	VehicleFX.Start(model, rig)
@@ -1345,6 +1493,10 @@ local function onStateChange(packet)
 		seatIndex = packet.seat
 		State.inVehicle = true
 		State.vehicleSeat = packet.seat
+		-- Published so anything that wants to act on the car itself -- the
+		-- tuning panel, a gamemode -- can reach it without this module
+		-- exporting a getter that returns a live handle.
+		State.vehicleModel = model
 		setViewmodelHidden(true)
 
 		if packet.seat == 1 then
@@ -1361,6 +1513,15 @@ local function onStateChange(packet)
 		seatIndex = nil
 		State.inVehicle = false
 		State.vehicleSeat = nil
+		State.vehicleModel = nil
+		-- Or the panel keeps reading the last car's revs and temperatures at
+		-- whatever they were when you stepped out, which looks live.
+		State.vehicleRpm, State.vehicleGear = nil, nil
+		State.vehicleCoolant, State.vehicleOil = nil, nil
+		State.vehicleOverheating, State.vehicleSurface = nil, nil
+		State.vehicleWheelSlip, State.vehicleContacts = nil, nil
+		State.vehicleSlipFront, State.vehicleSlipRear = nil, nil
+		State.vehicleSpool, State.vehicleDef = nil, nil
 		stopDriving()
 		setViewmodelHidden(false)
 		camPos = nil   -- so the next car does not lerp in from the last one
@@ -1474,11 +1635,36 @@ local function updateCamera(model, def, dt)
 	-- Two ways to aim it. Free-look orbits on the mouse, which is what you
 	-- want for looking at a map or shooting out of a window; otherwise the
 	-- camera trails the car's heading, which is what you want for driving.
+	local _, carYaw = chassis.CFrame:ToEulerAnglesYXZ()
+
 	local yaw
 	if Config.cl_vehicle_freelook then
 		yaw = math.rad(State.cameraX or 0)
+
+		-- AUTO-CENTRE. Free-look and driving want opposite things: looking
+		-- out of a window is worth a whole mouse for, and then you want to be
+		-- facing forward again without putting it back by hand.
+		--
+		-- Written back into cameraX rather than blended only into the drawn
+		-- yaw, so the mouse picks up from where the camera actually IS. A
+		-- version that left cameraX alone would snap back to wherever you had
+		-- last dragged it the moment you touched the mouse again.
+		local delay = num(Config.cl_vehicle_camautocenter, 0)
+		local idle = (State.gameTime or 0) - (State.lastLookAt or -1e9)
+
+		if delay > 0 and idle >= delay then
+			-- The SHORT way round. Yaw is an angle, and lerping 179 to -179
+			-- the long way is a full spin of the camera for two degrees of
+			-- correction.
+			-- cameraX is already in degrees, so only the car's yaw converts.
+			local diff = (math.deg(carYaw) - (State.cameraX or 0) + 180) % 360 - 180
+			local rate = num(Config.cl_vehicle_camautorate, 3.2)
+			local blend = math.clamp(rate * dt, 0, 1)
+
+			State.cameraX = (State.cameraX or 0) + diff * blend
+			yaw = math.rad(State.cameraX)
+		end
 	else
-		local _, carYaw = chassis.CFrame:ToEulerAnglesYXZ()
 		yaw = carYaw
 	end
 
@@ -1728,6 +1914,10 @@ function Vehicle.Update(deltaTime)
 			throttle = math.clamp(num(State.forwardMoveAxis, 0), 0, 1),
 			slipFront = sim.slipFront,
 			slipRear = sim.slipRear,
+			-- PER WHEEL, when we have it. Only the driver's own sim does:
+			-- an observed car is drawn from a packet that carries the two end
+			-- values, so it falls back to those and looks exactly as it did.
+			wheelSlip = sim.wheelSlip,
 			grounded = (sim.groundFrac or 0) > 0.01,
 			backfired = sim.backfired,
 		}, deltaTime)
@@ -1735,6 +1925,22 @@ function Vehicle.Update(deltaTime)
 		State.vehicleSpeed = math.abs(sim.roadSpeed or 0)
 		State.vehicleSlip = sim.slip or 0
 		State.vehicleGrounded = (sim.groundFrac or 0) > 0.01
+
+		-- Published for the debug panel and anything else that wants to read
+		-- the car rather than ask it. Kept here rather than written from
+		-- inside step(), so the sim stays a pure function of its own state.
+		State.vehicleRpm = sim.rpm
+		State.vehicleGear = sim.gear
+		State.vehicleCoolant = sim.coolantTemp
+		State.vehicleOil = sim.oilTemp
+		State.vehicleOverheating = sim.overheating == true
+		State.vehicleSurface = sim.surface
+		State.vehicleSlipFront = sim.slipFront
+		State.vehicleSlipRear = sim.slipRear
+		State.vehicleWheelSlip = sim.wheelSlip
+		State.vehicleContacts = sim.contacts
+		State.vehicleSpool = sim.spool
+		State.vehicleDef = sim.def
 	else
 		State.vehicleSpeed = 0
 	end

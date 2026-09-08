@@ -1156,8 +1156,30 @@ local function bindMouseLook()
 		local pitch = (Config.m_pitch or 1)
 		if Config.m_invert then pitch = -pitch end
 
+		-- A CHASE CAMERA sweeps a far wider arc for the same wrist movement
+		-- than an over-the-shoulder aim does, so the sensitivity that suits
+		-- shooting is usually too fast in a car. A multiplier rather than a
+		-- second sensitivity cvar, so raising the main one still raises both.
+		if State.inVehicle then
+			local vehicleScale = tonumber(Config.cl_vehicle_sensitivity)
+			sens = sens * ((vehicleScale and vehicleScale > 0) and vehicleScale or 1)
+		end
+
 		State.cameraX = (State.cameraX or 0) - dx * sens * (Config.m_yaw or 1)
 		State.cameraY = math.clamp((State.cameraY or 0) - dy * sens * pitch, -89, 89)
+
+		-- WHEN the mouse last moved, for the vehicle camera's auto-centre.
+		-- Recorded here rather than measured there because this is the only
+		-- place that knows a real movement happened: the camera runs every
+		-- frame whether or not anything was touched.
+		--
+		-- After the deltas are applied, and only for a delta that did
+		-- something -- a MouseMovement event with a zero delta arrives on
+		-- some setups every frame, and treating those as input would mean the
+		-- camera never re-centred at all.
+		if dx ~= 0 or dy ~= 0 then
+			State.lastLookAt = State.gameTime or os.clock()
+		end
 	end))
 end
 

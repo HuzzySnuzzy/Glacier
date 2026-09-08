@@ -759,6 +759,49 @@ section("Video", "World")
 cvarToggle("Video", "cl_tracers", "Bullet tracers")
 
 --=====================================================================
+-- VEHICLES
+--=====================================================================
+-- A SUBTAB under Video rather than a page of its own: everything here is a
+-- camera or a crosshair, and a top-level Vehicles tab that turned out to hold
+-- four camera settings would be a promise the page does not keep.
+
+newTab("Vehicles", true)
+section("Vehicles", "Camera")
+
+cvarSlider("Vehicles", "cl_vehicle_sensitivity", "Mouse sensitivity",
+	"Multiplier on your usual sensitivity while driving. A chase camera " ..
+	"sweeps a wider arc for the same wrist movement than aiming does.",
+	0.1, 2, 0.05, two)
+
+cvarToggle("Vehicles", "cl_vehicle_freelook", "Free look",
+	"The mouse orbits the camera. Off, it stays behind the car.")
+
+cvarSlider("Vehicles", "cl_vehicle_camautocenter", "Recentre after",
+	"Seconds of not touching the mouse before the camera swings back behind " ..
+	"the car. 0 leaves it where you pointed it.",
+	0, 6, 0.2, function(v)
+		if v <= 0 then return "off" end
+		return string.format("%.1f s", v)
+	end)
+
+cvarSlider("Vehicles", "cl_vehicle_camautorate", "Recentre speed",
+	"How quickly it swings back once it starts.", 0.5, 10, 0.1, two)
+
+section("Vehicles", "View")
+
+cvarSlider("Vehicles", "cl_vehicle_camdist", "Camera distance", nil, 8, 32, 0.5, two)
+cvarSlider("Vehicles", "cl_vehicle_camheight", "Camera height", nil, 1, 12, 0.2, two)
+cvarSlider("Vehicles", "cl_vehicle_campitch", "Camera pitch",
+	"Degrees. Negative looks down at the car.", -35, 10, 1, two)
+cvarSlider("Vehicles", "cl_vehicle_camlag", "Camera lag",
+	"Higher is stiffer; the camera follows the car more tightly.", 1, 20, 0.5, two)
+cvarSlider("Vehicles", "cl_vehicle_camfovgain", "Speed FOV",
+	"Extra field of view at the car's top speed.", 0, 40, 1, two)
+
+cvarToggle("Vehicles", "cl_vehicle_crosshair", "Show crosshair",
+	"There is nothing to aim while driving, so it is off by default.")
+
+--=====================================================================
 -- AUDIO
 --=====================================================================
 

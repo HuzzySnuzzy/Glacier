@@ -830,6 +830,28 @@ Define("cl_vehicle_campitch", -11, FCVAR.CLIENT)   -- degrees, negative looks do
 Define("cl_vehicle_camlag", 7, FCVAR.CLIENT)       -- higher is stiffer; 0 pins it rigid
 Define("cl_vehicle_camfovgain", 14, FCVAR.CLIENT)  -- extra FOV at top speed
 Define("cl_vehicle_freelook", true, FCVAR.CLIENT)  -- mouse orbits instead of steering the camera
+
+-- Seconds of no mouse movement before the chase camera swings back behind the
+-- car by itself. 0 turns it off and leaves free-look where you pointed it.
+--
+-- The point is that free-look and driving want opposite things: looking out of
+-- a window is worth a whole mouse for, and then you want to be facing forward
+-- again without having to put it back. A timer is what lets one control do
+-- both without a second keybind.
+Define("cl_vehicle_camautocenter", 1.6, FCVAR.CLIENT)
+-- How fast it swings back once it decides to, in the same units as camlag.
+Define("cl_vehicle_camautorate", 3.2, FCVAR.CLIENT)
+
+-- Mouse sensitivity WHILE DRIVING, as a multiplier on the usual one. A chase
+-- camera sweeps a much wider arc for the same wrist movement than an
+-- over-the-shoulder aim does, so the sensitivity that suits shooting is
+-- usually too fast in a car.
+Define("cl_vehicle_sensitivity", 0.7, FCVAR.CLIENT)
+
+-- The crosshair is for a weapon. In a car there is nothing to aim, and a dot
+-- pinned to the middle of the screen while you are trying to look at a corner
+-- is just something in the way.
+Define("cl_vehicle_crosshair", false, FCVAR.CLIENT)
 Define("cl_vehicle_debug", false, FCVAR.CLIENT)    -- draw suspension rays and force vectors
 
 -- How often the driver tells the server where their car is. 0 sends every

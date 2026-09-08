@@ -1084,6 +1084,10 @@ Registry.Vehicles = {
 	Driver = driverOf,
 	Enter  = tryEnter,
 	Exit   = tryExit,
+	-- "Is this model one of ours." The tuning remote needs it: without it,
+	-- a remote that writes attributes onto whatever model it is handed is a
+	-- way to write attributes onto anything in the game.
+	IsVehicle = function(model) return vehicles[model] ~= nil end,
 	All    = function()
 		local list = {}
 		for model in pairs(vehicles) do table.insert(list, model) end

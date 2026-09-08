@@ -27,6 +27,7 @@
 
 local Config = require(game:GetService("ReplicatedStorage"):WaitForChild("Config"))
 local State   = require(script.Parent.State)
+local VehicleDefs = require(game:GetService("ReplicatedStorage"):WaitForChild("VehicleDefs"))
 local ViewBob = require(script.Parent.ViewBob)
 
 local UserInputService = game:GetService("UserInputService")
@@ -631,19 +632,96 @@ function Debug.Update(deltaTime)
 		speedLabel.TextColor3 = (State.vehicleSlip or 0) > 0.15 and PALETTE.warn
 			or (State.vehicleGrounded and PALETTE.cool or PALETTE.dim)
 
-		statsLabel.Text = table.concat({
-			paint(("DRIVING  seat %d"):format(State.vehicleSeat or 0), PALETTE.cool),
+		local def = State.vehicleDef
+		local rpm = num(State.vehicleRpm)
+		local redline = def and def.redlineRpm or 0
+
+		-- Coloured against the car's OWN redline rather than a fixed number:
+		-- 6000 is nothing in one engine and over the limit in another, and a
+		-- readout that cannot tell you which is a readout of a number.
+		local rpmColour = PALETTE.value
+		if redline > 0 then
+			if rpm >= redline * 0.995 then rpmColour = PALETTE.warn
+			elseif rpm >= redline * 0.85 then rpmColour = PALETTE.cool end
+		end
+
+		-- Temperatures, against the car's own idea of normal. 1.0 is running
+		-- temperature, so the interesting reading is the ratio and the
+		-- degrees are there to make it concrete.
+		local function tempRow(label, value, which, ceiling)
+			if not value then return row(label, dim("     --")) end
+			local frac = def and VehicleDefs.HeatFraction(def, value, which) or 0
+			local colour = PALETTE.value
+			if def and ceiling and value >= ceiling then colour = PALETTE.warn
+			elseif frac < 0.6 then colour = PALETTE.dim
+			elseif frac > 1.08 then colour = PALETTE.cool end
+			return row(label, vc(colour, "%6.1f", value),
+				dim("   C   %.2f of normal", frac))
+		end
+
+		local lines = {
+			paint(("DRIVING  seat %d%s"):format(State.vehicleSeat or 0,
+				State.vehicleOverheating and "   OVERHEATING" or ""),
+				State.vehicleOverheating and PALETTE.warn or PALETTE.cool),
 			"",
 			sysBlock(),
 			"",
 			row("fps", v("%6.1f", displayFps)),
 			row("speed", v("%6.1f", carSpeed),
 				dim("   studs/s")),
-			row("slip", vc((State.vehicleSlip or 0) > 0.15 and PALETTE.warn or PALETTE.value,
+			row("rpm", vc(rpmColour, "%6.0f", rpm),
+				dim("   gear %s   redline %.0f",
+					State.vehicleGear and tostring(State.vehicleGear) or "-", redline)),
+		}
+
+		-- Only for a car that HAS one. A spool row reading a flat zero on
+		-- every naturally aspirated car is a row that trains you to skip it.
+		if def and def.turbo then
+			table.insert(lines, row("boost", v("%6.2f", num(State.vehicleSpool)),
+				dim("   spool")))
+		end
+
+		table.insert(lines, tempRow("coolant", State.vehicleCoolant, "coolant",
+			def and def.coolantMax))
+		table.insert(lines, tempRow("oil", State.vehicleOil, "oil",
+			def and def.oilMax))
+
+		table.insert(lines, row("slip",
+			vc((State.vehicleSlip or 0) > 0.15 and PALETTE.warn or PALETTE.value,
 				"%6.2f", num(State.vehicleSlip)),
-				dim("   wheels down "), flag(State.vehicleGrounded)),
-			row("pos", v("%s", fmtVec(body.Position))),
-		}, "\n")
+			dim("   front %.2f  rear %.2f",
+				num(State.vehicleSlipFront), num(State.vehicleSlipRear))))
+
+		table.insert(lines, row("grip", v("%6.2f", num(State.vehicleSurface, 1)),
+			dim("   surface   wheels down "), flag(State.vehicleGrounded)))
+
+		-- PER WHEEL, and the whole reason the surface work is worth having:
+		-- one line that says which corner is on what and how hard it is
+		-- sliding. Two wheels in the grass is obvious here and invisible in
+		-- any of the averages above it.
+		local contacts = State.vehicleContacts
+		local wheelSlip = State.vehicleWheelSlip
+		if contacts then
+			table.insert(lines, "")
+			table.insert(lines, paint("WHEELS", PALETTE.dim))
+			for i = 1, #contacts do
+				local contact = contacts[i]
+				local slip = wheelSlip and wheelSlip[i] or 0
+				local name = contact
+					and VehicleDefs.MaterialName(contact.material) or "air"
+				local colour = (not contact) and PALETTE.dim
+					or (slip > 0.15 and PALETTE.warn or PALETTE.value)
+				table.insert(lines, row(("  %d"):format(i),
+					vc(colour, "%6.2f", slip),
+					dim("   %-12s  grip %.2f", name,
+						contact and contact.grip or 0)))
+			end
+		end
+
+		table.insert(lines, "")
+		table.insert(lines, row("pos", v("%s", fmtVec(body.Position))))
+
+		statsLabel.Text = table.concat(lines, "\n")
 
 	elseif showHud and body then
 		speedLabel.Text = string.format("%.0f", speed)

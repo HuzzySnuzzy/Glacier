@@ -200,6 +200,54 @@ local DEFAULTS = {
 	-- figure so it reads the way the rest of the engine numbers do.
 	backfirePower = 400,
 
+	--=================================================================
+	-- SURFACES
+	--=================================================================
+	-- How much of the SURFACE's grip multiplier this car actually feels.
+	--
+	-- 1 takes the table below at face value: ice is a third of the grip of
+	-- tarmac and the car is undriveable on it, which is correct and not
+	-- always wanted. 0 ignores the ground entirely, which is what every car
+	-- did before this existed. Between them is a car with road tyres (high)
+	-- or something on knobblies that barely notices (low).
+	surfaceGrip  = 1,
+
+	--=================================================================
+	-- TEMPERATURE
+	--=================================================================
+	-- Fake, in exactly the sense the gearbox is fake: nothing here feeds back
+	-- into how the car drives. What it produces is two NUMBERS that move the
+	-- way an engine's do -- coolant first and fast, oil behind it and slow --
+	-- so a gauge has something true-feeling to show and a temperature warning
+	-- has something to fire on.
+	--
+	-- Deliberately not wired into power. An engine that quietly loses output
+	-- when it gets hot is a car that feels broken with no explanation, and
+	-- that is a gameplay decision to make on purpose rather than a side
+	-- effect of adding a gauge.
+	ambientTemp  = 22,        -- what a cold car sits at, degrees
+	coolantWarm  = 90,        -- normal running temperature
+	coolantMax   = 120,       -- over this the gauge is in the red
+	oilWarm      = 105,       -- oil runs hotter than coolant, and lags it
+	oilMax       = 145,
+
+	-- Degrees per second at FULL load, and the rate it sheds toward ambient
+	-- when it is not working. Warm-up is the difference between them: a car
+	-- idling gains heat_at_idle and loses coolRate, and settles wherever
+	-- those meet.
+	heatRate     = 9,
+	coolRate     = 2.2,
+	-- How fast the oil chases the coolant, per second. Much slower than the
+	-- coolant chases its own target, and that gap is the whole point: oil is
+	-- a bigger mass further from the water jacket, so it is still climbing
+	-- when the coolant has settled -- and it settles hotter. A pair of gauges
+	-- that move together is one gauge drawn twice.
+	--
+	-- 0.045 is a time constant of about twenty seconds against the coolant's
+	-- eleven, which is enough for the two needles to be visibly out of step
+	-- for the first half-minute of a drive.
+	oilLag       = 0.045,
+
 	seats = {
 		{ name = "driver",    offset = Vector3.new(-1.2, 0.6, 1.2) },
 		{ name = "passenger", offset = Vector3.new( 1.2, 0.6, 1.2) },
@@ -954,6 +1002,149 @@ end
 -- PlaybackSpeed still means something: a loop recorded at high revs is set to
 -- 0.5 in Studio and everything here follows it, instead of being stretched
 -- from a value this code invented.
+--=====================================================================
+-- SURFACES
+--=====================================================================
+-- What the ground under a WHEEL does to the grip that wheel has.
+--
+-- Read per wheel, not per car, and that is the whole point: two wheels on
+-- tarmac and two in the grass is a car that pulls to one side and steps out
+-- of a corner, and averaging the four into one number throws away the only
+-- interesting thing about driving off the road.
+--
+-- Multipliers against tarmac at 1. They are tuned by feel rather than derived
+-- from anything -- what matters is the ORDER and roughly how far apart the
+-- rungs are, and a real coefficient of friction would not make a Roblox car
+-- feel more like a car.
+--
+-- Built by NAME through pcall, because Enum.Material gains members over time
+-- and indexing one this client does not have is an error, not a nil. A
+-- material missing here is a material at 1, which is the safe way round: an
+-- unknown surface drives like a road rather than like ice.
+local SURFACE_GRIP = {}
+
+do
+	local byName = {
+		-- Sealed road, and the reference everything else is quoted against.
+		Asphalt = 1,       Concrete = 1,      Pavement = 0.98,
+		Brick = 0.96,      Cobblestone = 0.92,
+		Metal = 0.95,      DiamondPlate = 0.95,  CorrodedMetal = 0.88,
+		Marble = 0.85,     Granite = 0.95,    Slate = 0.9,
+		Plastic = 1,       SmoothPlastic = 1, Neon = 1,
+		Glass = 0.7,       ForceField = 1,
+
+		-- Loose. Enough grip to drive on, not enough to corner hard.
+		Grass = 0.72,      LeafyGrass = 0.66,  Ground = 0.75,
+		Sand = 0.55,       Salt = 0.6,         Sandstone = 0.85,
+		Rock = 0.88,       Basalt = 0.88,      Limestone = 0.9,
+		Pebble = 0.7,      WoodPlanks = 0.9,   Wood = 0.9,
+		Fabric = 0.85,     Cardboard = 0.8,    Carpet = 0.85,
+
+		-- The ones you notice.
+		Mud = 0.45,        Snow = 0.4,        Ice = 0.28,
+		Glacier = 0.3,     Water = 0.35,      CrackedLava = 0.8,
+	}
+
+	for name, value in pairs(byName) do
+		pcall(function() SURFACE_GRIP[Enum.Material[name]] = value end)
+	end
+end
+
+VehicleDefs.SurfaceGrip = SURFACE_GRIP
+
+-- The multiplier for one wheel's contact, with the car's own sensitivity
+-- already folded in.
+--
+-- `response` is def.surfaceGrip: 1 takes the table at face value, 0 ignores
+-- the ground entirely, which is what every car did before this existed.
+-- Interpolating rather than switching means a car can be made to care a
+-- little, and means turning the feature off is a value rather than a branch.
+function VehicleDefs.GripFor(material, response)
+	local base = material and SURFACE_GRIP[material] or 1
+	if base == 1 then return 1 end
+
+	local weight = math.clamp(response or 1, 0, 1)
+	return 1 + (base - 1) * weight
+end
+
+-- The name of a material, for a readout. Enum items stringify as
+-- "Enum.Material.Ice", which is three words too long for a debug row.
+function VehicleDefs.MaterialName(material)
+	if not material then return "air" end
+	local ok, name = pcall(function() return material.Name end)
+	return (ok and name) or tostring(material)
+end
+
+--=====================================================================
+-- TEMPERATURE
+--=====================================================================
+
+-- Coolant and oil, stepped one tick.
+--
+-- The model is two first-order lags chasing a target that load moves, which
+-- is enough to reproduce everything a temperature gauge is actually for: a
+-- cold car that takes a minute to come up, a hot lap that pushes past normal,
+-- and a slow fall back when you park.
+--
+-- COOLANT leads. It is a small mass in direct contact with the block, so it
+-- moves first and it is what a warning light is wired to. OIL is a bigger
+-- mass further away: it lags, it ends up hotter, and the gap between the two
+-- is what makes a pair of gauges worth having rather than one drawn twice.
+--
+-- `load` is 0..1 -- what the engine is being asked for, not what the car is
+-- doing. A car sitting at the redline against a wall is working just as hard
+-- as one doing it at speed, and cools worse for not moving.
+function VehicleDefs.StepTemperature(def, coolant, oil, load, airflow, dt)
+	if not (dt and dt > 0) then return coolant or def.ambientTemp, oil or def.ambientTemp end
+
+	local ambient = def.ambientTemp or 22
+	coolant = coolant or ambient
+	oil = oil or ambient
+
+	load = math.clamp(load or 0, 0, 1)
+	-- Airflow through the radiator. Standing still in traffic is how a real
+	-- car overheats, and without this the only thing that mattered would be
+	-- the throttle.
+	airflow = math.clamp(airflow or 0, 0, 1)
+
+	-- Where the coolant would end up if this load were held forever. Idle
+	-- settles a little under normal running; full load pushes past it, and
+	-- how far past depends on whether any air is going through the radiator.
+	local warm = def.coolantWarm or 90
+	local ceiling = def.coolantMax or 120
+	local target = ambient + (warm - ambient) * (0.55 + load * 0.45)
+		+ (ceiling - warm) * load * (1 - airflow * 0.75)
+
+	-- Approach it, faster when heating than when cooling: an engine makes
+	-- heat much more quickly than it sheds it, which is why a hard lap warms
+	-- a car in seconds and a cool-down lap takes minutes.
+	local rate = (target > coolant) and (def.heatRate or 9) or (def.coolRate or 2.2)
+	local span = math.max(ceiling - ambient, 1)
+	coolant += (target - coolant) * math.clamp(rate * dt / span, 0, 1)
+
+	-- The oil chases the COOLANT rather than the load, offset by how much
+	-- hotter it runs. That is what makes it lag without needing its own idea
+	-- of what the engine is doing.
+	local oilTarget = ambient + (coolant - ambient)
+		* ((def.oilWarm or 105) - ambient) / math.max(warm - ambient, 1)
+	oil += (oilTarget - oil) * math.clamp((def.oilLag or 0.35) * dt, 0, 1)
+
+	return coolant, oil
+end
+
+-- 0 cold, 1 at normal running, above 1 into the red. What a gauge needle and
+-- a warning colour both want, so neither has to know the numbers.
+function VehicleDefs.HeatFraction(def, value, which)
+	local ambient = def.ambientTemp or 22
+	local warm = (which == "oil") and (def.oilWarm or 105) or (def.coolantWarm or 90)
+	return ((value or ambient) - ambient) / math.max(warm - ambient, 1)
+end
+
+function VehicleDefs.Overheating(def, coolant, oil)
+	return (coolant or 0) >= (def.coolantMax or 120)
+		or (oil or 0) >= (def.oilMax or 145)
+end
+
 function VehicleDefs.EnginePitch(def, rpm)
 	local span = math.max(def.redlineRpm - def.idleRpm, 1)
 	local fraction = math.clamp(((rpm or def.idleRpm) - def.idleRpm) / span, 0, 1)
@@ -997,38 +1188,130 @@ end
 -- Friendly names first, because nobody opening the Properties panel wants to
 -- type "topSpeed" or guess that "drive" is measured in studs per second
 -- squared. The right-hand side is the field it actually sets.
+-- FRIENDLY NAMES for the fields, as they appear in Studio's attribute panel.
+--
+-- Every core field is reachable, and that is the contract: if a number
+-- decides how a car drives, sounds or looks, you can set it on the model
+-- without touching a script. Aliases exist for the ones whose internal name
+-- is jargon -- nobody types `topSpeed` when the box says MaxSpeed -- but the
+-- exact field name always works too, so a field with no alias here is still
+-- tunable rather than being a hidden second class of knob.
 local ATTRIBUTE_ALIASES = {
-	MaxSpeed      = "topSpeed",
-	TopSpeed      = "topSpeed",
+	-- Identity and mass
+	Label         = "label",
+	Mass          = "mass",
+	Weight        = "mass",
+
+	-- Engine
 	HP            = "horsepower",
 	Horsepower    = "horsepower",
 	Power         = "horsepower",
-	Mass          = "mass",
-	Weight        = "mass",
 	Gears         = "gears",
 	GearShiftSpeed= "shiftTime",
 	ShiftTime     = "shiftTime",
-	Grip          = "grip",
+	Redline       = "redlineRpm",
+	RevLimit      = "redlineRpm",
+	RevLimiter    = "revLimiter",
+	Idle          = "idleRpm",
+	IdleRPM       = "idleRpm",
+	BackfirePower = "backfirePower",
+	RevScale      = "revScale",
+	EnginePitchMin = "enginePitchMin",
+	EnginePitchMax = "enginePitchMax",
+
+	-- Speed and drive
+	MaxSpeed      = "topSpeed",
+	TopSpeed      = "topSpeed",
+	Reverse       = "reverse",
+	TopReverse    = "topReverse",
+	MaxReverse    = "topReverse",
 	Brakes        = "brake",
+	Drag          = "dragLinear",
+	RollingDrag   = "dragLinear",
+
+	-- Grip and handling
+	Grip          = "grip",
+	Balance       = "balance",
+	HandbrakeGrip = "handbrakeGrip",
+	GripResponse  = "gripResponse",
+	LoadTransfer  = "loadTransfer",
+	Understeer    = "understeer",
+	SurfaceGrip   = "surfaceGrip",
+
+	-- Steering
 	Steering      = "steerAngle",
+	SteerAngle    = "steerAngle",
+	SteerSpeed    = "steerSpeed",
+	SteerRate     = "steerRate",
+	SteerReturn   = "steerReturn",
+
+	-- Suspension and body
 	Suspension    = "suspension",
+	SpringHz      = "springHz",
+	SpringDamp    = "springDamp",
+	WheelCompressRate = "wheelCompressRate",
+	WheelExtendRate = "wheelExtendRate",
+	TerrainLean   = "terrainLean",
+	WheelRadius   = "wheelRadius",
+	WheelWidth    = "wheelWidth",
 	BodyRoll      = "bodyRoll",
+	BodyPitch     = "bodyPitch",
+	BodyHz        = "bodyHz",
+	BodyDamp      = "bodyDamp",
+	Restitution   = "restitution",
+	CrashLoss     = "crashLoss",
+
+	-- Turbo
 	Turbo         = "turbo",
 	TurboSpoolUp  = "turboSpoolUp",
 	TurboSpoolDown = "turboSpoolDown",
 	TurboOnset    = "turboOnset",
 	BOVSpool      = "bovSpool",
-	TerrainLean   = "terrainLean",
-	WheelCompressRate = "wheelCompressRate",
-	WheelExtendRate = "wheelExtendRate",
-	Redline       = "redlineRpm",
-	RevLimit      = "redlineRpm",
-	Idle          = "idleRpm",
-	BackfirePower = "backfirePower",
-	RevScale      = "revScale",
-	EnginePitchMin = "enginePitchMin",
-	EnginePitchMax = "enginePitchMax",
+
+	-- Temperature
+	AmbientTemp   = "ambientTemp",
+	CoolantWarm   = "coolantWarm",
+	CoolantMax    = "coolantMax",
+	OilWarm       = "oilWarm",
+	OilMax        = "oilMax",
+	HeatRate      = "heatRate",
+	CoolRate      = "coolRate",
+	OilLag        = "oilLag",
 }
+
+VehicleDefs.AttributeAliases = ATTRIBUTE_ALIASES
+
+-- Every name that can be written on a model, with the field it sets and the
+-- value it currently has. What a tuning panel enumerates, and what
+-- `vehicle_attrs` prints -- so "which knobs are there" has one answer rather
+-- than being a thing you find out by reading this file.
+--
+-- Sorted, because an editor that reorders its own rows between openings is
+-- an editor you cannot use.
+function VehicleDefs.TunableList(def)
+	def = def or DEFAULTS
+
+	local seen, out = {}, {}
+	for name, field in pairs(ATTRIBUTE_ALIASES) do
+		if def[field] ~= nil and not seen[name] then
+			seen[name] = true
+			table.insert(out, { name = name, field = field, value = def[field] })
+		end
+	end
+
+	table.sort(out, function(a, b) return a.name < b.name end)
+	return out
+end
+
+-- The field an attribute name sets, or nil if it sets nothing. The exact
+-- field name counts as its own alias.
+function VehicleDefs.FieldFor(name, def)
+	if type(name) ~= "string" then return nil end
+	local field = ATTRIBUTE_ALIASES[name]
+	if field then return field end
+	if (def or DEFAULTS)[name] ~= nil then return name end
+	return nil
+end
 
 -- Applied to a COPY, so one car's attributes never leak into the class every
 -- other car of that class is built from.
@@ -1077,13 +1360,13 @@ function VehicleDefs.Rig(model, def)
 	local cached = rigCache[model]
 	if cached and cached.chassis and cached.chassis.Parent then return cached end
 
-	def = def or VehicleDefs.GetOrDerive(model:GetAttribute("Class"))
+	local baseDef = def or VehicleDefs.GetOrDerive(model:GetAttribute("Class"))
 
 	-- Per-car tuning from the model's own attributes, applied HERE so there
 	-- is one place a def becomes final. Everything downstream reads rig.def
 	-- rather than the class it started from, which is what makes setting
 	-- MaxSpeed on one Car in Studio actually change that car.
-	def = VehicleDefs.ApplyAttributes(def, model)
+	def = VehicleDefs.ApplyAttributes(baseDef, model)
 
 	local chassis = model.PrimaryPart or model:FindFirstChild("Chassis")
 	if not chassis or not chassis:IsA("BasePart") then return nil end
@@ -1110,10 +1393,35 @@ function VehicleDefs.Rig(model, def)
 		seats = gatherSeats(model, chassis, def),
 		wheelbase = math.max(wheelbase, 1),
 		def = def,
+		-- THE UNTUNED DEF, kept so a retune can start from it.
+		--
+		-- Re-applying attributes to an already-tuned def is subtly wrong in
+		-- one direction that matters: DELETING an attribute would then leave
+		-- the last value it had, because nothing remembers what the class
+		-- said. Live tuning without this is a one-way trip.
+		baseDef = baseDef,
 	}
 
 	rigCache[model] = rig
 	return rig
+end
+
+-- Re-read the model's attributes into an existing rig, in place.
+--
+-- IN PLACE is the point: the rig is cached per model and handed out by
+-- reference, so every holder of it -- the client sim, the server's settle
+-- pass, the effects layer -- sees the new numbers without being told. A
+-- version that returned a fresh rig would retune only whoever called it.
+--
+-- The geometry is deliberately NOT re-measured. Attributes tune how a car
+-- behaves, not what parts it is made of, and re-walking the model on every
+-- keystroke of a tuning panel is a GetDescendants per character typed.
+--
+-- Returns the def, so a caller holding its own reference can refresh it.
+function VehicleDefs.Retune(rig, model)
+	if not (rig and model) then return rig and rig.def end
+	rig.def = VehicleDefs.ApplyAttributes(rig.baseDef or rig.def, model)
+	return rig.def
 end
 
 -- The same shape, from the def's numbers alone and touching no Instances.
@@ -1143,6 +1451,10 @@ function VehicleDefs.NominalRig(def)
 		seats = seats,
 		wheelbase = VehicleDefs.Wheelbase(def),
 		def = def,
+		-- Nothing tuned it, so the base and the live def are the same table.
+		-- Set anyway, so Retune works on a nominal rig rather than being a
+		-- thing that only functions on rigs built from real models.
+		baseDef = def,
 	}
 end
 

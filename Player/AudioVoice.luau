@@ -288,6 +288,36 @@ function AudioVoice:Stop()
 	end
 end
 
+-- How long the sample is, and how far into it we are, in seconds.
+--
+-- Both classes expose TimeLength and TimePosition, and both answer 0 for the
+-- length until the asset has actually loaded -- which for a sound played on
+-- the first frame of a drive is ordinary rather than exceptional. So 0 means
+-- "not known", and a caller has to treat it as such: reading it as "no sound"
+-- is how a feature that waits for a sample ends up not waiting on exactly the
+-- machines where the sample was still arriving.
+function AudioVoice:Length()
+	local source = (self.mode == "audio") and self.player or self.sound
+	local ok, value = pcall(function() return source.TimeLength end)
+	return (ok and type(value) == "number") and value or 0
+end
+
+function AudioVoice:Position()
+	local source = (self.mode == "audio") and self.player or self.sound
+	local ok, value = pcall(function() return source.TimePosition end)
+	return (ok and type(value) == "number") and value or 0
+end
+
+-- Seconds left of this sample, or 0 when it is not playing, has finished, or
+-- has not told us how long it is. All three mean the same thing to a caller
+-- waiting for it: stop waiting.
+function AudioVoice:Remaining()
+	if not self:IsPlaying() then return 0 end
+	local length = self:Length()
+	if length <= 0 then return 0 end
+	return math.max(length - self:Position(), 0)
+end
+
 -- For diagnostics: what this voice is actually driving.
 function AudioVoice:Describe()
 	return ("%s [%s]"):format(self.sound.Name,

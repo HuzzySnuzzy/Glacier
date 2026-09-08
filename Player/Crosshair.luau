@@ -138,7 +138,14 @@ end
 function Crosshair.Update(deltaTime)
 	if not gui then return end
 
-	local visible = Config.cl_crosshair ~= false and not State.isThirdPerson
+	-- The crosshair belongs to a weapon. In a car there is nothing to aim,
+	-- and a dot pinned to the middle of the screen while you are looking
+	-- through a corner is something in the way -- so it is off by default and
+	-- cl_vehicle_crosshair brings it back for anyone shooting out of a window.
+	local inVehicle = State.inVehicle == true
+	local visible = Config.cl_crosshair ~= false
+		and not State.isThirdPerson
+		and (not inVehicle or Config.cl_vehicle_crosshair == true)
 	gui.Enabled = visible
 	if not visible then return end
 
