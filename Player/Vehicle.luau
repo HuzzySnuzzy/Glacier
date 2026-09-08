@@ -507,6 +507,20 @@ local function step(s, dt)
 
 	local def = s.def
 
+	-- THE STARTER IS STILL TURNING.
+	--
+	-- An engine that is not running is not driving anything, and the car used
+	-- to pull away under its own crank sound. Counted down here rather than
+	-- measured against a clock, so it is a pure function of the steps taken
+	-- and a paused or slowed sim cranks for the same number of ticks.
+	--
+	-- Brakes and steering are deliberately NOT suppressed: a car being started
+	-- on a hill rolls, and the one thing you want then is the brake.
+	local cranking = (s.crankRemaining or 0) > 0
+	if cranking then
+		s.crankRemaining = math.max((s.crankRemaining or 0) - dt, 0)
+	end
+
 	-- RETUNED from the model's attributes, once, on the first step after one
 	-- changed. In place on the rig, so the effects layer and anything else
 	-- holding it sees the same numbers without being told.
@@ -740,12 +754,23 @@ local function step(s, dt)
 	-- engine cooks, and this is the whole of why.
 	local revFrac = math.clamp((s.rpm - def.idleRpm)
 		/ math.max(def.redlineRpm - def.idleRpm, 1), 0, 1)
-	local heatLoad = math.clamp(math.max(throttleAxis, 0) * 0.6 + revFrac * 0.4, 0, 1)
-	local airflow = math.clamp(roadAbs / math.max(def.topSpeed * 0.5, 1), 0, 1)
+	-- An engine that is not running makes no heat, whatever the pedal is
+	-- doing -- and the pedal is being ignored anyway while the starter turns.
+	local heatLoad = cranking and 0
+		or math.clamp(math.max(throttleAxis, 0) * 0.6 + revFrac * 0.4, 0, 1)
+	local roadAir = math.clamp(roadAbs / math.max(def.topSpeed * 0.5, 1), 0, 1)
+
+	-- THE FAN, stepped from the temperature it is reacting to -- this frame's,
+	-- before the temperature moves again. Reacting to a number that has
+	-- already been updated for this tick would put the switch one frame ahead
+	-- of the thing it is switching on.
+	s.fanOn, s.fanSpeed = VehicleDefs.StepFan(def, s.coolantTemp, s.fanOn, s.fanSpeed, dt)
 
 	s.coolantTemp, s.oilTemp = VehicleDefs.StepTemperature(
-		def, s.coolantTemp, s.oilTemp, heatLoad, airflow, dt)
+		def, s.coolantTemp, s.oilTemp, heatLoad,
+		VehicleDefs.Airflow(def, roadAir, s.fanSpeed), dt, not cranking)
 	s.overheating = VehicleDefs.Overheating(def, s.coolantTemp, s.oilTemp)
+	s.roadAirflow = roadAir
 
 	--------------------------------------------------------------
 	-- 4. LONGITUDINAL
@@ -767,7 +792,10 @@ local function step(s, dt)
 
 		-- Mid-shift the clutch is out and the engine is not driving the
 		-- wheels. Brakes still work: you can stand on them during a shift.
-		local shifting = (s.shiftRemaining or 0) > 0
+		--
+		-- A car still being cranked is the same condition for the same reason,
+		-- and lasts longer.
+		local shifting = (s.shiftRemaining or 0) > 0 or cranking
 
 		if throttleAxis > 0.01 and not shifting then
 			if roadSpeed < -1 then
@@ -1411,6 +1439,9 @@ local function startDriving(model, def, index)
 		rollAngle = 0,
 		pitchAngle = 0,
 		groundFrac = 0,
+		-- THE STARTER. Counted down by the step, and the whole of why the car
+		-- does not pull away under its own crank sound.
+		crankRemaining = rig.def.startTime or 0,
 		seatCount = #rig.seats,
 		params = castParams(model, #rig.seats),
 		overlapParams = castOverlapParams(model, #rig.seats),
@@ -1522,6 +1553,8 @@ local function onStateChange(packet)
 		State.vehicleWheelSlip, State.vehicleContacts = nil, nil
 		State.vehicleSlipFront, State.vehicleSlipRear = nil, nil
 		State.vehicleSpool, State.vehicleDef = nil, nil
+		State.vehicleFan, State.vehicleFanOn = nil, nil
+		State.vehicleCranking = nil
 		stopDriving()
 		setViewmodelHidden(false)
 		camPos = nil   -- so the next car does not lerp in from the last one
@@ -1931,6 +1964,7 @@ function Vehicle.Update(deltaTime)
 			-- an observed car is drawn from a packet that carries the two end
 			-- values, so it falls back to those and looks exactly as it did.
 			wheelSlip = sim.wheelSlip,
+			fanSpeed = sim.fanSpeed,
 			grounded = (sim.groundFrac or 0) > 0.01,
 			backfired = sim.backfired,
 		}, deltaTime)
@@ -1953,6 +1987,9 @@ function Vehicle.Update(deltaTime)
 		State.vehicleWheelSlip = sim.wheelSlip
 		State.vehicleContacts = sim.contacts
 		State.vehicleSpool = sim.spool
+		State.vehicleFan = sim.fanSpeed
+		State.vehicleFanOn = sim.fanOn == true
+		State.vehicleCranking = (sim.crankRemaining or 0) > 0
 		State.vehicleDef = sim.def
 	else
 		State.vehicleSpeed = 0

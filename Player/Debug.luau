@@ -660,7 +660,8 @@ function Debug.Update(deltaTime)
 		end
 
 		local lines = {
-			paint(("DRIVING  seat %d%s"):format(State.vehicleSeat or 0,
+			paint(("DRIVING  seat %d%s%s"):format(State.vehicleSeat or 0,
+				State.vehicleCranking and "   STARTING" or "",
 				State.vehicleOverheating and "   OVERHEATING" or ""),
 				State.vehicleOverheating and PALETTE.warn or PALETTE.cool),
 			"",
@@ -685,6 +686,16 @@ function Debug.Update(deltaTime)
 			def and def.coolantMax))
 		table.insert(lines, tempRow("oil", State.vehicleOil, "oil",
 			def and def.oilMax))
+
+		-- The FAN, next to what it is reacting to. A bare on/off would not say
+		-- whether the blades have got up to speed yet, and the blade speed is
+		-- what both the cooling and the sound actually run off.
+		table.insert(lines, row("fan",
+			vc(State.vehicleFanOn and PALETTE.cool or PALETTE.dim,
+				"%6.2f", num(State.vehicleFan)),
+			dim("   %s   in at %.0f, out at %.0f",
+				State.vehicleFanOn and "running" or "off",
+				def and def.fanOnTemp or 0, def and def.fanOffTemp or 0)))
 
 		table.insert(lines, row("slip",
 			vc((State.vehicleSlip or 0) > 0.15 and PALETTE.warn or PALETTE.value,

@@ -166,8 +166,20 @@ local function fxOf(model, rig)
 	end
 
 	local fx = {
-		engine = findByName(audio, "engine", "Sound")
-			or findByName(chassis, "engine", "Sound"),
+		-- "fan" REJECTED, or the radiator fan wins this lookup half the time.
+		--
+		-- Matching is by containment, so "engine" finds both Engine and
+		-- Engine_Fan and which one you get is the order Studio happens to
+		-- list them in -- the same trap that made the idle haze and the
+		-- backfire cloud swap places, and the reason `reject` exists.
+		engine = findByName(audio, "engine", "Sound", "fan")
+			or findByName(chassis, "engine", "Sound", "fan"),
+
+		-- The radiator fan. Searched for on its own terms rather than as a
+		-- second "engine": a car without one simply has no fan sound, which
+		-- is a normal car, not a broken one.
+		fan = findByName(audio, "fan", "Sound")
+			or findByName(chassis, "fan", "Sound"),
 
 		-- "screech" rather than "tire", because the wheels are already called
 		-- tyres and matching on that would pick up a rolling-noise loop or a
@@ -212,6 +224,7 @@ local function fxOf(model, rig)
 	-- It also owns the artist's volume and pitch, which is why the
 	-- remembering that used to live here does not any more.
 	fx.engine = AudioVoice.From(fx.engine)
+	fx.fan = AudioVoice.From(fx.fan)
 	fx.screech = AudioVoice.From(fx.screech)
 	fx.backfireSound = AudioVoice.From(fx.backfireSound)
 	fx.turboSpool = AudioVoice.From(fx.turboSpool)
@@ -321,6 +334,7 @@ end
 --
 --   rpm, gear, throttle, slipFront, slipRear, grounded, shiftedUp, backfired
 --   wheelSlip   -- optional, one per wheel; the driver's own car only
+--   fanSpeed    -- 0..1, how fast the radiator fan's blades are turning
 function VehicleFX.Update(model, rig, state, deltaTime)
 	if not (model and rig and rig.chassis) then return end
 
@@ -350,6 +364,28 @@ function VehicleFX.Update(model, rig, state, deltaTime)
 			-- Started here rather than assumed: a sound left not-playing in
 			-- the model would otherwise be silent forever with no clue why.
 			fx.engine:Resume()
+		end
+	end
+
+	--------------------------------------------------------------
+	-- RADIATOR FAN
+	--------------------------------------------------------------
+	-- Driven by the BLADE SPEED rather than by the switch, because that is
+	-- what a fan winding up sounds like -- and because the cooling follows
+	-- the same number, so what you hear and what is happening cannot drift.
+	--
+	-- Pitch as well as volume. A fan coming on is a rising note, and one that
+	-- only got louder sounds like somebody turning it up.
+	if fx.fan then
+		local speed = math.clamp(state.fanSpeed or 0, 0, 1)
+
+		fx.fan:SetVolume(fx.fan.baseVolume * speed)
+		fx.fan:SetPitch(fx.fan.basePitch * (0.8 + speed * 0.25))
+
+		if speed > 0.02 then
+			fx.fan:Resume()
+		elseif fx.fan:IsPlaying() then
+			fx.fan:Stop()
 		end
 	end
 
@@ -539,6 +575,7 @@ function VehicleFX.Report(model, rig)
 	local lines = {
 		("[fx] %s"):format(model.Name),
 		("  engine        %s"):format(voice(fx.engine)),
+		("  fan           %s"):format(voice(fx.fan)),
 		("  backfire snd  %s"):format(voice(fx.backfireSound)),
 		("  screech snd   %s"):format(voice(fx.screech)),
 		("  turbo spool   %s"):format(voice(fx.turboSpool)),
@@ -603,6 +640,10 @@ function VehicleFX.Quiet(rig)
 	if fx.turboSpool then
 		fx.turboSpool:SetVolume(0)
 		fx.turboSpool:Stop()
+	end
+	if fx.fan then
+		fx.fan:SetVolume(0)
+		fx.fan:Stop()
 	end
 
 	for _, pipe in ipairs(fx.exhausts) do

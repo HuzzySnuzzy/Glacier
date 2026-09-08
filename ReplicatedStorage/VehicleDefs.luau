@@ -237,6 +237,47 @@ local DEFAULTS = {
 	-- those meet.
 	heatRate     = 9,
 	coolRate     = 2.2,
+
+	--=================================================================
+	-- THE RADIATOR FAN
+	--=================================================================
+	-- Thermostatic, with a GAP between the two thresholds, and the gap is the
+	-- whole design. One threshold chatters: the fan pulls the coolant a
+	-- fraction below the line, switches off, the coolant crosses back over,
+	-- and it switches on again -- several times a second. That is a fan sound
+	-- that stutters and a cooling term that is neither on nor off.
+	--
+	-- So it cuts in HOT and drops out COOLER, and holds whatever it was in
+	-- between. Both sit ABOVE normal running temperature on purpose: below it
+	-- there is nothing for a fan to do, and a fan that could not switch off
+	-- until the coolant fell under the thermostat's own floor would never
+	-- switch off at all.
+	fanOnTemp    = 97,
+	fanOffTemp   = 92,
+
+	-- What the fan is worth, on the same 0..1 scale road speed feeds. Not
+	-- added to airflow but MAXED with it: a fan cannot help a radiator that
+	-- already has a headwind through it, which is exactly why sitting still
+	-- is the case it exists for.
+	fanAirflow   = 0.85,
+
+	-- Blades have mass. Instant is the one thing a fan is not, and hearing it
+	-- wind up is most of what makes it read as a fan rather than a switch.
+	fanSpinUp    = 1.6,
+	fanSpinDown  = 0.9,
+
+	--=================================================================
+	-- STARTING
+	--=================================================================
+	-- How long the starter turns before the engine is running. Nothing drives
+	-- during it -- an engine that is not running is not driving anything --
+	-- and the crank sound plays over exactly this window.
+	--
+	-- A NUMBER rather than the length of the sample, because the sim must not
+	-- depend on an asset having loaded: a car that was driveable on the
+	-- machines where the sound arrived late and not on the others is worse
+	-- than one that is consistently a bit out of step with its own audio.
+	startTime    = 1.1,
 	-- How fast the oil chases the coolant, per second. Much slower than the
 	-- coolant chases its own target, and that gap is the whole point: oil is
 	-- a bigger mass further from the water jacket, so it is still climbing
@@ -1094,7 +1135,14 @@ end
 -- `load` is 0..1 -- what the engine is being asked for, not what the car is
 -- doing. A car sitting at the redline against a wall is working just as hard
 -- as one doing it at speed, and cools worse for not moving.
-function VehicleDefs.StepTemperature(def, coolant, oil, load, airflow, dt)
+-- `running` is whether the engine is turning over under its own power. False
+-- while the starter is still cranking, and the difference is not a detail: an
+-- engine that is not running makes NO heat, so the thermostat has nothing to
+-- hold and the whole thing is just cooling toward the air around it.
+--
+-- Defaulted to true, because every caller that predates this had a running
+-- engine and saying so at each of them would be noise.
+function VehicleDefs.StepTemperature(def, coolant, oil, load, airflow, dt, running)
 	if not (dt and dt > 0) then return coolant or def.ambientTemp, oil or def.ambientTemp end
 
 	local ambient = def.ambientTemp or 22
@@ -1107,13 +1155,46 @@ function VehicleDefs.StepTemperature(def, coolant, oil, load, airflow, dt)
 	-- the throttle.
 	airflow = math.clamp(airflow or 0, 0, 1)
 
-	-- Where the coolant would end up if this load were held forever. Idle
-	-- settles a little under normal running; full load pushes past it, and
-	-- how far past depends on whether any air is going through the radiator.
+	-- Where the coolant would end up if this were held forever.
+	--
+	-- NORMAL RUNNING IS THE FLOOR, not a place hard driving eventually
+	-- reaches. That is what a thermostat does: it holds the coolant at its
+	-- rated temperature whatever the engine is doing, and only once the
+	-- radiator cannot reject the heat does the number climb past it. The
+	-- previous version made the floor depend on load, so an idling car
+	-- settled thirty degrees cold and the fan could never come on -- which is
+	-- the opposite of what idling in traffic does to a real engine.
+	--
+	-- Above the floor, two terms:
+	--   LOAD    how much heat is being made
+	--   AIRFLOW how much is being carried away, and the fan feeds this
+	--
+	-- The airflow term is scaled BY LOAD as well as standing on its own. The
+	-- standalone part is what makes idling in traffic get hot -- a radiator
+	-- with no air through it cannot reject even idle heat -- and the
+	-- load-scaled part is what makes the red zone reachable at all: an engine
+	-- held at the redline with nothing moving past it is the one case that
+	-- should cook, and a curve whose maximum fell short of the ceiling would
+	-- make coolantMax a colour on a gauge that nothing can ever produce.
+	--
+	-- Read against the thresholds, with the shipped numbers:
+	--   idling, no air          99      over the 97 the fan cuts in at
+	--   idling, fan running     91      under the 92 it drops out at
+	--   cruising                95      never needs it
+	--   driving hard           104      does, and it stays on
+	--   revving, stood still   120      the red, and only here
+	--   revving, fan running   106      which is what the fan is for
 	local warm = def.coolantWarm or 90
 	local ceiling = def.coolantMax or 120
-	local target = ambient + (warm - ambient) * (0.55 + load * 0.45)
-		+ (ceiling - warm) * load * (1 - airflow * 0.75)
+
+	local target
+	if running == false then
+		-- Nothing is making heat. A stopped engine has one destination.
+		target = ambient
+	else
+		target = warm + (ceiling - warm) * math.clamp(
+			load * 0.45 + (1 - airflow) * (0.3 + load * 0.25), 0, 1)
+	end
 
 	-- Approach it, faster when heating than when cooling: an engine makes
 	-- heat much more quickly than it sheds it, which is why a hard lap warms
@@ -1130,6 +1211,52 @@ function VehicleDefs.StepTemperature(def, coolant, oil, load, airflow, dt)
 	oil += (oilTarget - oil) * math.clamp((def.oilLag or 0.35) * dt, 0, 1)
 
 	return coolant, oil
+end
+
+-- The radiator fan, stepped one tick. Returns whether it is RUNNING and how
+-- fast the blades are actually going.
+--
+-- Two values because they answer different questions. The switch is
+-- thermostatic and instant; the blades take a moment to reach speed, and it
+-- is the blade speed that both the sound and the cooling should follow -- a
+-- fan that cooled at full effect on the frame it switched on would drop the
+-- coolant in a step.
+--
+-- `on` is carried IN as well as out: between the two thresholds the answer is
+-- "whatever it was already", and that holding is the hysteresis.
+function VehicleDefs.StepFan(def, coolant, on, speed, dt)
+	coolant = coolant or def.ambientTemp or 22
+	speed = speed or 0
+
+	local onAt = def.fanOnTemp or 97
+	local offAt = def.fanOffTemp or 92
+
+	if coolant >= onAt then
+		on = true
+	elseif coolant <= offAt then
+		on = false
+	end
+	-- Between them: unchanged. Deliberately no else.
+
+	if dt and dt > 0 then
+		local target = on and 1 or 0
+		local rate = on and (def.fanSpinUp or 1.6) or (def.fanSpinDown or 0.9)
+		speed += (target - speed) * math.clamp(rate * dt, 0, 1)
+	end
+
+	return on == true, speed
+end
+
+-- Air through the radiator, from the road and the fan together.
+--
+-- MAXED rather than added: a fan cannot help a radiator that already has a
+-- headwind going through it, which is exactly why standing still is the case
+-- it exists for. Adding them would make a fan at speed cool better than
+-- physics allows, and would hide the one behaviour worth having.
+function VehicleDefs.Airflow(def, roadAirflow, fanSpeed)
+	return math.max(
+		math.clamp(roadAirflow or 0, 0, 1),
+		math.clamp(fanSpeed or 0, 0, 1) * (def.fanAirflow or 0.85))
 end
 
 -- 0 cold, 1 at normal running, above 1 into the red. What a gauge needle and
@@ -1268,6 +1395,10 @@ local ATTRIBUTE_ALIASES = {
 	TurboOnset    = "turboOnset",
 	BOVSpool      = "bovSpool",
 
+	-- Starting
+	StartTime     = "startTime",
+	CrankTime     = "startTime",
+
 	-- Temperature
 	AmbientTemp   = "ambientTemp",
 	CoolantWarm   = "coolantWarm",
@@ -1277,6 +1408,11 @@ local ATTRIBUTE_ALIASES = {
 	HeatRate      = "heatRate",
 	CoolRate      = "coolRate",
 	OilLag        = "oilLag",
+	FanOnTemp     = "fanOnTemp",
+	FanOffTemp    = "fanOffTemp",
+	FanAirflow    = "fanAirflow",
+	FanSpinUp     = "fanSpinUp",
+	FanSpinDown   = "fanSpinDown",
 }
 
 VehicleDefs.AttributeAliases = ATTRIBUTE_ALIASES
