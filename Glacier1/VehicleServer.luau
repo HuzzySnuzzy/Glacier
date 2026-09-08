@@ -151,19 +151,10 @@ end
 -- it takes to replace the placeholder -- as long as it keeps the structure
 -- VehicleDefs.Build documents (a PrimaryPart named Chassis, a Wheels folder).
 local function sourceModel(class)
-	local library = ReplicatedStorage:FindFirstChild("Vehicles")
-	if not library then return nil end
-
-	-- Case-insensitive, because a model called "Car" and a command typed as
-	-- `vehicle_spawn car` should find each other. Exact match wins so an
-	-- author can still have both "Van" and "van" if they insist.
-	local template = library:FindFirstChild(class)
-	if not template then
-		local wanted = string.lower(tostring(class))
-		for _, child in ipairs(library:GetChildren()) do
-			if string.lower(child.Name) == wanted then template = child break end
-		end
-	end
+	-- The lookup moved to VehicleDefs, where the tuning panel and the reset
+	-- path can reach it too -- three copies of "case-insensitive, exact match
+	-- wins" is three chances to disagree about which model a class means.
+	local template = VehicleDefs.Template(class)
 
 	-- PrimaryPart is NOT required here. A model with a part named Chassis is
 	-- the common near-miss, and VehicleDefs.Rig sets PrimaryPart for them --

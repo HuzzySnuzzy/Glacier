@@ -23,6 +23,11 @@
 -- SEATS are offsets in chassis space. Seat 1 is the driver -- always -- and
 -- everything downstream keys on that, so do not reorder them.
 
+-- The one service this module touches, and only for Template below: a class
+-- name has to be resolvable to the model in ReplicatedStorage.Vehicles it is
+-- built from. Everything else here is arithmetic on tables.
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
 local VehicleDefs = {}
 
 --=====================================================================
@@ -455,6 +460,45 @@ function VehicleDefs.GetOrDerive(class)
 	derived.class = string.lower(tostring(class or "sedan"))
 	derived.label = tostring(class or "Vehicle")
 	return derived
+end
+
+-- THE MODEL A CLASS IS BUILT FROM, in ReplicatedStorage.Vehicles.
+--
+-- One lookup rule, reachable from both VMs, because there are now three
+-- callers: the spawner clones it, the tuning panel reads the attributes an
+-- author put on it, and the reset path restores them. Three copies of
+-- "case-insensitive, exact match wins" is three chances to disagree.
+--
+-- Returns the TEMPLATE, not a clone. Callers that need an instance clone it.
+function VehicleDefs.Template(class)
+	local library = ReplicatedStorage:FindFirstChild("Vehicles")
+	if not library then return nil end
+
+	-- Case-insensitive, because a model called "Car" and a command typed as
+	-- `vehicle_spawn car` should find each other. Exact match wins so an
+	-- author can still have both "Van" and "van" if they insist.
+	local template = library:FindFirstChild(tostring(class))
+	if not template then
+		local wanted = string.lower(tostring(class))
+		for _, child in ipairs(library:GetChildren()) do
+			if string.lower(child.Name) == wanted then template = child break end
+		end
+	end
+
+	return (template and template:IsA("Model")) and template or nil
+end
+
+-- What this car SHIPS WITH for one setting: the value the author put on the
+-- template in ReplicatedStorage.Vehicles, or nil if they set none.
+--
+-- This is the baseline a reset should return to, and it is NOT the class
+-- default. A model cloned from the library carries its author's attributes,
+-- so clearing them does not restore the car -- it throws away the setup and
+-- leaves whatever the class happens to say, which for a model the engine has
+-- never heard of is a sedan.
+function VehicleDefs.AuthoredValue(class, name)
+	local template = VehicleDefs.Template(class)
+	return template and template:GetAttribute(name) or nil
 end
 
 function VehicleDefs.List()

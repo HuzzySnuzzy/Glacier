@@ -103,12 +103,21 @@ local function applyTuning(plr, model, name, text)
 	local field = VehicleDefs.FieldFor(name, def)
 	if not field then return false, ("no such setting: %s"):format(tostring(name)) end
 
-	-- RESET, as its own action rather than a magic value: clearing the
-	-- attribute is what restores the class default, and "" is a legitimate
+	-- RESET means "back to what this model SHIPS WITH", not "back to the
+	-- class".
+	--
+	-- A car cloned from ReplicatedStorage.Vehicles carries the attributes its
+	-- author put on the template. Clearing them does not restore the car: it
+	-- throws the setup away and leaves whatever the class says, which for a
+	-- model the engine has never heard of is a sedan. So reset puts the
+	-- authored value BACK, and only clears when there was not one.
+	--
+	-- Its own action rather than a magic value, because "" is a legitimate
 	-- thing to want in a string field.
 	if text == nil then
-		model:SetAttribute(name, nil)
-		return true, "default"
+		local authored = VehicleDefs.AuthoredValue(model:GetAttribute("Class"), name)
+		model:SetAttribute(name, authored)
+		return true, authored ~= nil and authored or "class default"
 	end
 
 	local value, why = coerce(text, def[field])
@@ -118,23 +127,41 @@ local function applyTuning(plr, model, name, text)
 	return true, value
 end
 
+-- THE ANSWER GOES BACK TO THE PANEL, not only to the console.
+--
+-- Every refusal here used to be a Glacier.Tell and nothing else, so a person
+-- with the console shut saw a value they typed quietly fail to take -- which
+-- is indistinguishable from a broken editor, and is what "changing values
+-- does not push changes" turned out to mean. The panel puts it in its own
+-- subtitle now, where somebody using the panel is already looking.
+local function reportTo(plr, action, ok, reason)
+	VehicleTune:FireClient(plr, action, ok, reason)
+end
+
 VehicleTune.OnServerEvent:Connect(function(plr, action, model, name, text)
 	local can, why = allowed(plr)
 	if not can then
+		reportTo(plr, action, false, why)
 		Glacier.Tell(plr, ("[vedit] %s"):format(why), true)
 		return
 	end
 
 	if action == "set" then
 		local ok, result = applyTuning(plr, model, name, text)
+		reportTo(plr, action, ok, ok
+			and ("%s = %s"):format(tostring(name), tostring(result))
+			or tostring(result))
 		Glacier.Tell(plr, ok
 			and ("[vedit] %s = %s"):format(tostring(name), tostring(result))
 			or ("[vedit] %s"):format(tostring(result)), not ok)
 
 	elseif action == "reset" then
 		local ok, result = applyTuning(plr, model, name, nil)
+		reportTo(plr, action, ok, ok
+			and ("%s restored to %s"):format(tostring(name), tostring(result))
+			or tostring(result))
 		Glacier.Tell(plr, ok
-			and ("[vedit] %s restored to the class default"):format(tostring(name))
+			and ("[vedit] %s restored to %s"):format(tostring(name), tostring(result))
 			or ("[vedit] %s"):format(tostring(result)), not ok)
 
 	elseif action == "resetall" then
@@ -146,12 +173,33 @@ VehicleTune.OnServerEvent:Connect(function(plr, action, model, name, text)
 		-- Only the tuning attributes. Seat occupancy and Class live in the
 		-- same namespace, and wiping those would eject everybody aboard and
 		-- turn the car into an untyped model.
-		local def = VehicleDefs.GetOrDerive(model:GetAttribute("Class"))
+		local class = model:GetAttribute("Class")
+		local def = VehicleDefs.GetOrDerive(class)
+
+		-- TWO PASSES, and neither can do the other's half.
+		--
+		-- The instance may carry settings the template does not -- added in
+		-- this session, by this panel -- and those have to GO. The template
+		-- may carry ones the instance has lost, deleted by an earlier reset,
+		-- and those have to come BACK. Clearing alone leaves a car stripped
+		-- of its author's setup; restoring alone leaves this session's edits
+		-- sitting on top of it.
 		for name in pairs(model:GetAttributes()) do
 			if VehicleDefs.FieldFor(name, def) then
 				model:SetAttribute(name, nil)
 			end
 		end
-		Glacier.Tell(plr, "[vedit] every setting restored to the class default")
+
+		local template = VehicleDefs.Template(class)
+		if template then
+			for name, value in pairs(template:GetAttributes()) do
+				if VehicleDefs.FieldFor(name, def) then
+					model:SetAttribute(name, value)
+				end
+			end
+		end
+
+		reportTo(plr, "resetall", true, "restored to what the model ships with")
+		Glacier.Tell(plr, "[vedit] every setting restored to what the model ships with")
 	end
 end)

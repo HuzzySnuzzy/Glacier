@@ -217,26 +217,42 @@ local function send(action, name, text)
 	VehicleTune:FireServer(action, currentModel, name, text)
 end
 
--- The green mark is the honest bit of the panel: it says this field has an
--- ATTRIBUTE on the model, overriding what the class ships. Which is also
--- exactly what survives -- attributes are saved with the model, so unlike the
--- weapon editor there is nothing here to export before you stop.
+-- The green mark says this field differs from WHAT THE MODEL SHIPS WITH --
+-- not from what the class says, which are different things and only one of
+-- them is useful.
+--
+-- A car cloned out of ReplicatedStorage.Vehicles carries the attributes its
+-- author put on the template. Those ARE the car; the class default behind
+-- them is whatever VehicleDefs happens to say for a name it may never have
+-- heard of. So a mark reading "class 95" on a model the author set to 140 was
+-- pointing at a number nothing uses.
+local function baselineFor(name, row)
+	if currentModel then
+		local authored = VehicleDefs.AuthoredValue(currentModel:GetAttribute("Class"), name)
+		if authored ~= nil then return authored, "model" end
+	end
+	return row.default, "class"
+end
+
 local function refreshRow(name)
 	local row = rows[name]
 	if not (row and currentModel) then return end
 
+	local baseline, source = baselineFor(name, row)
+
 	local override = currentModel:GetAttribute(name)
 	local value = override
-	if value == nil then value = row.default end
+	if value == nil then value = baseline end
 
 	if not row.box:IsFocused() then
 		row.box.Text = tostring(value)
 	end
 
-	row.box.TextColor3 = (override ~= nil) and C.changed or C.value
-	row.mark.Text = (override ~= nil)
-		and ("class " .. tostring(row.default))
-		or ""
+	-- Changed means "differs from the baseline", so a car sitting on exactly
+	-- what its author set reads as untouched -- which it is.
+	local changed = (override ~= nil) and (override ~= baseline)
+	row.box.TextColor3 = changed and C.changed or C.value
+	row.mark.Text = changed and ("%s %s"):format(source, tostring(baseline)) or ""
 end
 
 local function buildRow(entry, index)
@@ -355,6 +371,27 @@ local function rebuild()
 	-- number the car is not using.
 	currentConn = currentModel.AttributeChanged:Connect(function(name)
 		if rows[name] then refreshRow(name) end
+	end)
+end
+
+-- WHAT THE SERVER SAID, in the panel rather than only in the console.
+--
+-- Every refusal used to be a console line and nothing else, so somebody with
+-- the console shut watched a value they typed quietly fail to take -- which
+-- looks exactly like a broken editor. This is the difference between "nothing
+-- happened" and "sv_cheats must be 1".
+--
+-- Cleared on the next rebuild, so a stale complaint cannot outlive the thing
+-- it was complaining about.
+if VehicleTune then
+	VehicleTune.OnClientEvent:Connect(function(action, ok, reason)
+		if not gui.Enabled then return end
+		if ok then
+			-- Success is already visible: the row turns green with the new
+			-- number in it. Saying so as well is noise.
+			return
+		end
+		subtitle.Text = ('<font color="#FF6E6E">%s</font>'):format(tostring(reason))
 	end)
 end
 
