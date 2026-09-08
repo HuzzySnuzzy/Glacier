@@ -53,6 +53,7 @@
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local VehicleDefs = require(ReplicatedStorage:WaitForChild("VehicleDefs"))
+local AudioVoice = require(script.Parent:WaitForChild("AudioVoice"))
 
 local VehicleFX = {}
 

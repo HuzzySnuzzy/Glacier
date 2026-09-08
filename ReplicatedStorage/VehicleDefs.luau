@@ -243,6 +243,23 @@ local DEFAULTS = {
 	heatRate     = 9,
 	coolRate     = 2.2,
 
+	-- HOW MUCH FASTER IT SHEDS HEAT WITH AIR GOING THROUGH THE RADIATOR, as a
+	-- multiplier on coolRate at full airflow. 2 means a fan at full speed
+	-- pulls the temperature down three times as fast as one that is not
+	-- turning; 0 is the old behaviour, where airflow decided WHERE the
+	-- coolant settled and nothing at all about how quickly it got there.
+	--
+	-- That is what made a bigger fan feel like it did nothing. A radiator's
+	-- whole job is rejecting heat FASTER, and with only the target responding
+	-- to it, an engine sitting under a running fan came down at exactly the
+	-- rate of one that had been switched off and left to the air.
+	--
+	-- Cooling only. Airflow slowing WARM-UP is true of a real engine and is
+	-- deliberately not modelled: it would make a car driven hard from cold
+	-- take longer to come up to temperature than one left idling, which is
+	-- correct, unwanted, and nothing to do with what this knob is for.
+	airflowCooling = 2,
+
 	--=================================================================
 	-- THE RADIATOR FAN
 	--=================================================================
@@ -264,6 +281,11 @@ local DEFAULTS = {
 	-- added to airflow but MAXED with it: a fan cannot help a radiator that
 	-- already has a headwind through it, which is exactly why sitting still
 	-- is the case it exists for.
+	--
+	-- A FRACTION, so 1 is "as much air as flat out on a straight" and there
+	-- is nothing above it: raising this past 1 buys nothing, because there is
+	-- no such thing as more than all the air. The knob for "cool faster than
+	-- that" is airflowCooling, which has no ceiling.
 	fanAirflow   = 0.85,
 
 	-- Blades have mass. Instant is the one thing a fan is not, and hearing it
@@ -1273,7 +1295,17 @@ function VehicleDefs.StepTemperature(def, coolant, oil, load, airflow, dt, runni
 	-- Approach it, faster when heating than when cooling: an engine makes
 	-- heat much more quickly than it sheds it, which is why a hard lap warms
 	-- a car in seconds and a cool-down lap takes minutes.
-	local rate = (target > coolant) and (def.heatRate or 9) or (def.coolRate or 2.2)
+	-- FASTER WITH AIR THROUGH THE RADIATOR, which is the half of cooling the
+	-- target alone cannot express: airflow decides where the coolant settles
+	-- AND how quickly it gets there. Without this the fan only ever lowered
+	-- the destination, so winding it up made no difference you could watch.
+	local rate
+	if target > coolant then
+		rate = def.heatRate or 9
+	else
+		rate = (def.coolRate or 2.2)
+			* (1 + airflow * (def.airflowCooling or 2))
+	end
 	local span = math.max(ceiling - ambient, 1)
 	coolant += (target - coolant) * math.clamp(rate * dt / span, 0, 1)
 
@@ -1328,9 +1360,14 @@ end
 -- it exists for. Adding them would make a fan at speed cool better than
 -- physics allows, and would hide the one behaviour worth having.
 function VehicleDefs.Airflow(def, roadAirflow, fanSpeed)
-	return math.max(
+	-- CLAMPED ON THE WAY OUT as well as on the way in. This is a fraction of
+	-- "all the air there is", and a fanAirflow set above 1 would hand back
+	-- 1.4 -- which the caller clamps anyway, so the setting looked like it
+	-- did nothing, and which anything reading this for a gauge would draw off
+	-- the end of the dial.
+	return math.clamp(math.max(
 		math.clamp(roadAirflow or 0, 0, 1),
-		math.clamp(fanSpeed or 0, 0, 1) * (def.fanAirflow or 0.85))
+		math.clamp(fanSpeed or 0, 0, 1) * (def.fanAirflow or 0.85)), 0, 1)
 end
 
 -- 0 cold, 1 at normal running, above 1 into the red. What a gauge needle and
@@ -1481,6 +1518,11 @@ local ATTRIBUTE_ALIASES = {
 	OilMax        = "oilMax",
 	HeatRate      = "heatRate",
 	CoolRate      = "coolRate",
+	-- Two names for one field: it is the airflow that does the cooling, and
+	-- the fan is what people are usually reaching for when they want more of
+	-- it.
+	AirflowCooling = "airflowCooling",
+	FanCoolRate   = "airflowCooling",
 	OilLag        = "oilLag",
 	FanOnTemp     = "fanOnTemp",
 	FanOffTemp    = "fanOffTemp",
