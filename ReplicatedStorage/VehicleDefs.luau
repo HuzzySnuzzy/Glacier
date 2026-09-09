@@ -1048,6 +1048,26 @@ function VehicleDefs.DrivenGrip(def, wheels, contacts)
 	return down / total
 end
 
+-- HOW MUCH OF A CAR'S MOTION SURVIVES ONE STEP OF ITS OWN BODYWORK DRAGGING.
+--
+-- Returns a multiplier for the step: 1 is nothing lost.
+--
+-- A car on its roof has no suspension contacts, so as far as the tipping
+-- model is concerned it is still flying -- and nothing damps rotation in the
+-- air, on purpose. Left alone it lies there revolving slowly and skating
+-- about for the rest of the round. The shell scraping on the ground is the
+-- only thing left to take that out of it.
+--
+-- GATED ON THE WHEELS CARRYING NOTHING, and that gate is the whole of why
+-- this is a function rather than an `if` in the step. Ungated it fires
+-- whenever the sweep touches anything at all, which is a car that loses a
+-- quarter of its speed a second for as long as it is against a wall -- a
+-- scrape that reads as a handbrake.
+function VehicleDefs.BodyScrub(grounded, touching, rate, dt)
+	if grounded or not touching then return 1 end
+	return math.clamp(1 - (rate or 6) * (dt or 0), 0, 1)
+end
+
 --=====================================================================
 -- WHEEL LAYOUT
 --=====================================================================

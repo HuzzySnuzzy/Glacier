@@ -384,6 +384,35 @@ local BODY_ANGLE_LIMIT = 14
 -- player movement code draws the same line at 0.75.
 local MIN_RESTING_NORMAL_Y = 0.5
 
+-- How fast a car dragging its own bodywork along the ground loses its spin,
+-- per second. Only ever applied on a frame where the chassis was actually
+-- pushed out of something -- see the depenetration pass.
+local BODY_SCRUB = 6
+
+-- WHETHER THE SUSPENSION CAN BE LEFT TO DEAL WITH THIS SURFACE.
+--
+-- Two places -- the sweep and the depenetration pass -- deliberately ignore
+-- the ground, because the springs carry the car over it and colliding the box
+-- with it as well means the two fight: a car climbing a ramp catches its
+-- leading bottom edge and the sweep eats the speed, and the same hit on the
+-- way down turns a landing into a bounce.
+--
+-- That reasoning holds exactly as long as the suspension is pointing at the
+-- ground, AND NOT ONE DEGREE FURTHER. The rays are cast along the car's own
+-- down; land on the roof and they go at the sky, so there is no spring, no
+-- contact and no support -- and the two passes that were counting on it walk
+-- the car straight through the floor and refuse to push it back out. An
+-- upside-down car fell through the world, which is the one state where the
+-- exemption is not a convenience but a hole.
+--
+-- Measured against the CAR's up, by the same threshold that decides whether a
+-- surface is restable at all: the wheels are on one side of the chassis, and
+-- a surface pushing on the other side is not theirs to hold.
+local function suspensionCarries(cf, normal)
+	return normal.Y >= MIN_RESTING_NORMAL_Y
+		and normal:Dot(cf.UpVector) >= MIN_RESTING_NORMAL_Y
+end
+
 local MAX_DEPEN_PASSES = 4
 local DEPEN_EPS = 0.01
 
@@ -405,7 +434,7 @@ local function depenetrate(s, cf)
 				-- suspension's job for the same reason as the sweep above.
 				-- Shoving the chassis up out of a ramp it is resting on
 				-- fights the springs and launches the car off crests.
-				local fromGround = mtv and mtv.Unit.Y >= MIN_RESTING_NORMAL_Y
+				local fromGround = mtv and suspensionCarries(cf, mtv.Unit)
 				if mtv and not fromGround and depth > DEPEN_EPS and depth > deepest then
 					push, deepest = mtv, depth
 				end
@@ -467,7 +496,7 @@ local function moveChassis(s, cf, displacement)
 		--
 		-- Anything too steep for the suspension to hold is still a wall and
 		-- still stops the car -- that is what the threshold is for.
-		if hit.Normal.Y >= MIN_RESTING_NORMAL_Y then
+		if suspensionCarries(cf, hit.Normal) then
 			-- Step past it and carry on. The suspension will lift the car
 			-- over it on the same tick.
 			cf = cf + remaining
@@ -1304,6 +1333,36 @@ local function step(s, dt)
 		local into = s.vel:Dot(outward)
 		if into < 0 then s.vel -= outward * into end
 		s.depenCount = (s.depenCount or 0) + 1
+	end
+
+	-- THE SHELL DRAGGING ON THE GROUND, which is the only thing left to take
+	-- the rotation out of a car lying on its roof.
+	--
+	-- Nothing damps rotation in the air, on purpose: a car that quietly
+	-- stopped mid-flip would land flat and make every jump look the same. But
+	-- a car on its roof has no suspension contacts either, so as far as the
+	-- tipping model is concerned it is still flying -- and it would lie there
+	-- revolving slowly for the rest of the round.
+	--
+	-- Triggered by the BODY touching something, from either pass: the sweep
+	-- hits the floor every step a resting car is pushed into it, while the
+	-- depenetration pass only fires on the steps where it actually overlapped
+	-- -- which on a settled car is hardly ever, and was not enough.
+	--
+	-- Only when the BODY is what is touching. On its wheels the suspension
+	-- and the tyres own both of these, and bleeding speed here as well would
+	-- be a car that slows down every time it brushes a kerb.
+	local scrub = VehicleDefs.BodyScrub(grounded,
+		hit ~= nil or push.Magnitude > DEPEN_EPS, BODY_SCRUB, dt)
+	if scrub < 1 then
+		s.rollRate = (s.rollRate or 0) * scrub
+		s.pitchRate = (s.pitchRate or 0) * scrub
+
+		-- And it slides to a stop rather than skating away on its roof. The
+		-- vertical part is left alone: that is gravity and the surface, and
+		-- the two passes above have already had their say about it.
+		local flat = Vector3.new(s.vel.X, 0, s.vel.Z)
+		s.vel = Vector3.new(0, s.vel.Y, 0) + flat * scrub
 	end
 
 	--------------------------------------------------------------
