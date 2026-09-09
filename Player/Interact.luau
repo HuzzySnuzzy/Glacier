@@ -52,7 +52,17 @@ local State = require(script.Parent.State)
 local Input = require(script.Parent.Input)
 
 local plr = Players.LocalPlayer
-local cam = workspace.CurrentCamera
+
+-- READ EVERY SCAN, not held from load.
+--
+-- Roblox replaces workspace.CurrentCamera rather than editing it in place,
+-- and this module is required early -- during Vehicle's own require, before
+-- anything has drawn a frame. A handle taken then can end up being a camera
+-- nobody is looking through, and the symptom is the whole feature quietly
+-- pointing somewhere else: no prompt, no target, no error.
+local function camera()
+	return workspace.CurrentCamera
+end
 
 local Interact = {}
 
@@ -323,7 +333,7 @@ local function visible(instance, eye, position)
 	-- would get past RespectCanCollide above. Belt and braces on purpose:
 	-- this is the failure that took the whole feature down, and it did it
 	-- silently.
-	local ignore = { instance, cam }
+	local ignore = { instance, camera() }
 	if State.playerBody then table.insert(ignore, State.playerBody) end
 	if State.playerPuppet then table.insert(ignore, State.playerPuppet) end
 
@@ -461,6 +471,24 @@ local function gather(ctx)
 	return scratch
 end
 
+-- What happened to the candidate the player most likely meant: the nearest
+-- one, whether or not it qualified. Reported when nothing won, because "three
+-- things nearby and none of them chosen" is the state that needs a reason.
+local function nearestVerdict(candidates, ctx, opts)
+	if #candidates == 0 then return "nothing nearby" end
+
+	local closest, closestDistance
+	for _, c in ipairs(candidates) do
+		local d = (c.position - ctx.from).Magnitude
+		if not closestDistance or d < closestDistance then
+			closest, closestDistance = c, d
+		end
+	end
+
+	local report = Interact.Explain({ closest }, ctx.eye, ctx.look, ctx.from, opts)
+	return ("%s: %s"):format(tostring(closest.label), report[1].verdict)
+end
+
 function Interact.Update(deltaTime)
 	build()
 
@@ -493,7 +521,7 @@ function Interact.Update(deltaTime)
 			-- client uses to decide whether it is drawing a player at all.
 			target = nil
 		else
-			local cf = cam.CFrame
+			local cf = camera().CFrame
 			local from = body:IsA("BasePart") and body.Position or body:GetPivot().Position
 			local ctx = { eye = cf.Position, look = cf.LookVector, from = from }
 
@@ -514,11 +542,30 @@ function Interact.Update(deltaTime)
 				end
 			end
 
+			-- WHY THERE IS NO PROMPT, published rather than worked out later.
+			--
+			-- Everything here fails by showing nothing, which is also what it
+			-- does when there is genuinely nothing to use -- so "it is not
+			-- working" and "you are not pointing at anything" look identical
+			-- from the outside. The debug HUD shows this line, and it is the
+			-- difference between a screenshot answering the question and a
+			-- screenshot raising it.
+			local why
 			if best and not visible(best.instance, ctx.eye, best.position) then
 				best = nil
+				why = "behind something"
+			elseif not best then
+				why = nearestVerdict(candidates, ctx, opts)
 			end
 
 			target = best
+
+			State.useScans = (State.useScans or 0) + 1
+			State.useCandidates = #candidates
+			State.useTarget = best
+				and ("%s %s"):format(best.kind or "?", tostring(best.label))
+				or nil
+			State.useWhy = why
 		end
 	end
 
@@ -581,7 +628,7 @@ Config.Command("use_report", {
 			return
 		end
 
-		local cf = cam.CFrame
+		local cf = camera().CFrame
 		local from = body:IsA("BasePart") and body.Position or body:GetPivot().Position
 		local ctxInfo = { eye = cf.Position, look = cf.LookVector, from = from }
 

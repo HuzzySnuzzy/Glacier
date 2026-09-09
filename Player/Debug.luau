@@ -838,6 +838,22 @@ function Debug.Update(deltaTime)
 				key(Enum.KeyCode.W, "W"), dim(" "), key(Enum.KeyCode.A, "A"), dim(" "),
 				key(Enum.KeyCode.S, "S"), dim(" "), key(Enum.KeyCode.D, "D"),
 				dim("   focus "), flag(UserInputService.WindowFocused)),
+
+			-- WHAT +USE WOULD DO, and when it would do nothing, why.
+			--
+			-- A prompt that is absent looks exactly like a prompt that is
+			-- broken, so the scan counter comes first: if it never moves,
+			-- nothing is calling Interact at all, and that is a different
+			-- problem from every other one on this line.
+			(State.useScans == nil)
+				and row("use", vc(PALETTE.bad, "%s", "not running"),
+					dim("  (nothing is calling Interact.Update)"))
+				or row("use",
+					State.useTarget
+						and vc(PALETTE.good, "%-22s", State.useTarget)
+						or dim("%-22s", "none"),
+					dim(" %d seen", num(State.useCandidates)),
+					State.useTarget and "" or dim("   %s", State.useWhy or "?")),
 			"",
 			row("strafe", v("%5.1f deg", angle),
 				dim("  proj "), v("%5.2f", proj),

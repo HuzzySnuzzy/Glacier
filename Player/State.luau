@@ -22,6 +22,14 @@ return {
 	vehicleSteerAxis = 0,
 	vehicleHandbrake = false,
 	vehicleExitRequested = false,
+
+	-- WHAT +USE IS LOOKING AT, published for the debug HUD. Nil target with a
+	-- reason beside it is the whole point: this system fails by showing
+	-- nothing, which is also what it does when there is nothing to show.
+	useScans = nil,
+	useCandidates = nil,
+	useTarget = nil,
+	useWhy = nil,
 	viewmodel = nil,
 	prevBodyPos  = nil,
 	curBodyPos   = nil,
