@@ -47,22 +47,12 @@ local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 
 local Config = require(ReplicatedStorage:WaitForChild("Config"))
+local Recoil = require(ReplicatedStorage:WaitForChild("Recoil"))
 local ItemRegistry = require(ReplicatedStorage:WaitForChild("ItemRegistry"))
 local State = require(script.Parent.State)
 local Input = require(script.Parent.Input)
 
 local plr = Players.LocalPlayer
-
--- READ EVERY SCAN, not held from load.
---
--- Roblox replaces workspace.CurrentCamera rather than editing it in place,
--- and this module is required early -- during Vehicle's own require, before
--- anything has drawn a frame. A handle taken then can end up being a camera
--- nobody is looking through, and the symptom is the whole feature quietly
--- pointing somewhere else: no prompt, no target, no error.
-local function camera()
-	return workspace.CurrentCamera
-end
 
 local Interact = {}
 
@@ -72,6 +62,48 @@ Interact.TAG = "GlacierUse"
 local function num(v, fallback)
 	local n = tonumber(v)
 	return n or fallback
+end
+
+-- WHERE YOU ARE LOOKING, and it is NOT workspace.CurrentCamera.
+--
+-- This is the same aim the bullets use -- Weapons builds its shot from
+-- exactly these two lines -- and using anything else is how the label ends up
+-- describing something other than what the crosshair is over.
+--
+-- The camera was the first attempt and it was wrong twice over. It has the
+-- viewbob baked into it, which must never move a bullet and must not move a
+-- prompt either; and reading it here reported an eye over a thousand studs
+-- from the player, which made every candidate in the world either behind them
+-- or wide of the aim. Weapons already says so in as many words above
+-- eyePosition, and this is the second thing to learn it the hard way.
+--
+-- So: the body's position plus the eye height, and the yaw and pitch the
+-- engine actually steers with. Through Recoil.aimCFrame rather than rebuilt
+-- from sin and cos, because the angle convention in this engine has been got
+-- wrong five times and there is no reason for a sixth.
+--
+-- Recoil punch is deliberately NOT applied. Bullets travel along the punched
+-- angle; a prompt that jittered off its target under recoil would be reading
+-- the number for a different question.
+local function aimFrom()
+	local body = State.playerBody
+	if not (body and body.Parent) then return nil end
+
+	-- Interpolated between physics ticks exactly as the shot is, so the aim
+	-- does not lag the picture at frame rates that are not a multiple of the
+	-- tick.
+	local base = (State.curBodyPos and State.prevBodyPos)
+		and State.prevBodyPos:Lerp(State.curBodyPos, State.tickAlpha or 1)
+		or (body:IsA("BasePart") and body.Position or body:GetPivot().Position)
+
+	local eye = base + Vector3.new(0, State.currentCamHeight or 0, 0)
+	local look = Recoil.aimCFrame(eye, State.cameraX or 0, State.cameraY or 0,
+		Vector2.zero).LookVector
+
+	-- REACH is measured from the body and AIM from the eye, which are a head's
+	-- height apart. The server measures range from the body, so a client that
+	-- measured from the eye would offer things the server then refuses.
+	return eye, look, base
 end
 
 --=====================================================================
@@ -333,7 +365,7 @@ local function visible(instance, eye, position)
 	-- would get past RespectCanCollide above. Belt and braces on purpose:
 	-- this is the failure that took the whole feature down, and it did it
 	-- silently.
-	local ignore = { instance, camera() }
+	local ignore = { instance }
 	if State.playerBody then table.insert(ignore, State.playerBody) end
 	if State.playerPuppet then table.insert(ignore, State.playerPuppet) end
 
@@ -521,9 +553,8 @@ function Interact.Update(deltaTime)
 			-- client uses to decide whether it is drawing a player at all.
 			target = nil
 		else
-			local cf = camera().CFrame
-			local from = body:IsA("BasePart") and body.Position or body:GetPivot().Position
-			local ctx = { eye = cf.Position, look = cf.LookVector, from = from }
+			local eye, look, from = aimFrom()
+			local ctx = { eye = eye, look = look, from = from }
 
 			local candidates = gather(ctx)
 			local opts = {
@@ -628,9 +659,8 @@ Config.Command("use_report", {
 			return
 		end
 
-		local cf = camera().CFrame
-		local from = body:IsA("BasePart") and body.Position or body:GetPivot().Position
-		local ctxInfo = { eye = cf.Position, look = cf.LookVector, from = from }
+		local eye, look, from = aimFrom()
+		local ctxInfo = { eye = eye, look = look, from = from }
 
 		local candidates = gather(ctxInfo)
 		local opts = {
