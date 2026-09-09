@@ -20,21 +20,28 @@
 --   YAW comes from a bicycle model -- yawRate = speed/wheelbase * tan(steer)
 --   -- plus a slip term. Not from torque about an inertia tensor.
 --
---   PITCH and ROLL are DRAWN, not simulated: they come from the four
---   suspension contacts plus load transfer from the current acceleration.
+--   PITCH and ROLL are integrated as angles with rates, from ONE question:
+--   does the car's weight still land between the wheels holding it up? See
+--   VehicleDefs.TipAccel. Not from torque about an inertia tensor either, but
+--   they are state rather than decoration -- a car that leaves a ramp
+--   rotating is still rotating when it lands.
 --
--- The reason is that the pitch/roll of a car is almost entirely a suspension
--- artefact and almost never a thing you want the solver to have an opinion
--- about. Simulating them properly buys tumbling crashes and costs stability,
--- twitchiness at low speed, and a car that can wedge itself upside down under
--- a doorframe. Deriving them buys body roll into corners, dive under braking,
--- squat under power, and a car that always lands on its wheels -- which is
--- what GTA IV actually feels like to drive, whatever its solver is doing.
+-- They USED to be drawn: a bounded spring on the shell, on the reasoning that
+-- a car's attitude is almost entirely a suspension artefact. That is true
+-- right up to the two moments everybody expects a car to fall over, and it
+-- could do neither -- you could corner at any speed you liked, and you could
+-- park with half the car over a cliff and hang there perfectly level.
 --
--- What that gives up, stated plainly: you cannot barrel-roll, a ramp will not
--- flip you, and a collision will not spin the car about its long axis. Those
--- are real losses. `vehicle_flip` exists for the case where you want the car
--- righted anyway.
+-- What is kept from that reasoning is the shape of the model rather than its
+-- conclusion. There is still no inertia tensor and no contact solver; there
+-- is a support polygon, a centre of gravity, and gravity about whichever
+-- wheels are still down. That is enough for a swerve to put a car on its
+-- roof and for a ledge to pitch it in nose-first, and it costs none of the
+-- stability a real solver would.
+--
+-- What it still gives up, stated plainly: a collision does not impart spin,
+-- and nothing here knows about hitting a kerb. `vehicle_flip` remains, for
+-- the car that ends up on its roof and stays there.
 
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -794,7 +801,17 @@ local function step(s, dt)
 	if grounded then
 		-- Traction scales with how many wheels are down, so a car cresting a
 		-- hill on two wheels does not accelerate as if it were planted.
+		--
+		-- THE DRIVEN ONES, for the engine's own force. A rear-drive car with
+		-- its back wheels in the air has no drive however hard you press, and
+		-- scaling by the whole car meant one balanced on its front wheels
+		-- still pulled away at half throttle -- and meant that changing a car
+		-- to front-wheel drive changed nothing about which end had to be on
+		-- the road. Braking and the tyre forces stay on groundFrac: all four
+		-- wheels brake, whichever two are driven.
 		local traction = groundFrac
+		local driveGrip = VehicleDefs.DrivenGrip(def, s.rig.wheels, contacts)
+		s.driveGrip = driveGrip
 
 		-- Mid-shift the clutch is out and the engine is not driving the
 		-- wheels. Brakes still work: you can stand on them during a shift.
@@ -811,7 +828,7 @@ local function step(s, dt)
 				-- Constant force. The top speed is set by DRAG, not by a cap
 				-- here -- VehicleDefs derives the drag coefficient from drive
 				-- and topSpeed precisely so these two cannot disagree.
-				tyre += forward * def.drive * powerScale * traction * throttleAxis
+				tyre += forward * def.drive * powerScale * traction * driveGrip * throttleAxis
 			end
 
 		elseif throttleAxis < -0.01 and (roadSpeed > 1 or not shifting) then
@@ -1111,60 +1128,108 @@ local function step(s, dt)
 	--------------------------------------------------------------
 	-- 11. ORIENTATION  (drawn, per the header)
 	--------------------------------------------------------------
-	-- A surface too steep to rest on is not a surface to lie flat against.
-	-- Without this, a car that got onto its side aligned to whatever its now
-	-- sideways suspension rays were hitting and stayed there -- the second
-	-- half of the flip-and-stick, and worth blocking on its own even though
-	-- the cause is fixed, because a genuine rollover down a steep bank
-	-- should end with the car righting itself rather than welded to a cliff.
-	local restable = grounded and groundNormal.Y >= MIN_RESTING_NORMAL_Y
-	local targetUp = restable and groundNormal or Vector3.yAxis
+	-- ROLL AND PITCH ARE SIMULATED FROM HERE, not drawn.
+	--
+	-- They used to be a bounded spring on the shell -- the header said as
+	-- much, deliberately -- and that is fine right up to the two moments
+	-- everybody expects a car to fall over. It could do neither: you could
+	-- corner at any speed you liked, and you could park with half the car
+	-- over a cliff and sit there perfectly level, leaning on nothing.
+	--
+	-- The model is in VehicleDefs.TipAccel and it is one sentence: a car
+	-- stands up for as long as its weight lands between the wheels holding it
+	-- up. Everything below is measuring those two things.
 
-	-- Load transfer. Lateral acceleration leans the body out of the corner,
-	-- longitudinal dives or squats it. Both are pure appearance and both are
-	-- most of what makes a car feel heavy.
-	-- From the TYRE forces, not the total. Gravity is not a cornering load,
-	-- and including it meant a tilted car leaned because it was tilted.
+	-- WHERE IT IS BEING HELD UP. Not how many wheels are down but WHICH: two
+	-- on the left is a car about to roll, two at the back is a car about to
+	-- nose into a ravine, and "half the wheels" describes both.
+	local halfTrack = math.max(def.size.X * 0.5, 0.1)
+	local halfBase = math.max((s.rig.wheelbase or def.size.Z) * 0.5, 0.1)
+
+	local rollMin, rollMax = VehicleDefs.SupportSpan(s.rig.wheels, contacts, "right", halfBase)
+	local pitchMin, pitchMax = VehicleDefs.SupportSpan(s.rig.wheels, contacts, "forward", halfBase)
+
+	-- Load transfer, exactly as before: lateral acceleration leans the body
+	-- out of the corner, longitudinal dives or squats it. From the TYRE
+	-- forces, not the total -- gravity is not a cornering load, and including
+	-- it meant a tilted car leaned because it was tilted.
 	local lateralG = tyre:Dot(right)
 	local longG = tyre:Dot(forward)
 
-	-- A SECOND-ORDER spring, not a lerp. The old first-order approach could
-	-- only ever ease toward the target and stop, which reads as a shell bolted
-	-- solid to the chassis; a spring overshoots and comes back, and that
-	-- overshoot is the whole of what "springy" means. Under-damped on purpose.
-	-- Published because they are what the spring is chasing, which is worth
-	-- having on the HUD when tuning the body.
+	-- The lean the suspension is asked to hold, which is the load transfer
+	-- plus whatever the road is doing. Degrees out of bodyRoll and bodyPitch,
+	-- because that is what those numbers have always been; radians from here
+	-- on, because a sine of degrees is not a thing.
 	--
-	-- SIGNS, and they were both backwards. A positive roll drops the car's
-	-- LEFT side and a positive pitch lifts its NOSE -- see the same paragraph
-	-- in VehicleDefs.AxleLean, which is the other thing writing these angles.
-	--
-	-- Load goes to the OUTBOARD side of a corner and that side drops, so a
-	-- right-hand turn -- tyre force toward +right, lateralG positive -- leans
-	-- the body left. Weight goes BACKWARDS under power, so the nose rises.
-	-- Negated, this was a car that leaned into its corners like a motorcycle
-	-- and dived under acceleration.
-	s.rollTarget = lateralG * def.bodyRoll
-	s.pitchTarget = longG * def.bodyPitch
-
-	s.rollAngle, s.rollRate = dampedSpring(s.rollAngle or 0, s.rollRate or 0,
-		s.rollTarget, def.bodyHz, def.bodyDamp, dt)
-	s.pitchAngle, s.pitchRate = dampedSpring(s.pitchAngle or 0, s.pitchRate or 0,
-		s.pitchTarget, def.bodyHz, def.bodyDamp, dt)
-
-	-- Bounded, and the rate zeroed at the stop. Body lean is a decoration; a
-	-- decoration that can reach 90 degrees is a car lying on its side, and no
-	-- tuning value should be able to produce one. Cheap insurance against the
-	-- next person raising bodyRoll and finding out the hard way.
-	local function bound(angle, rate, limit)
-		if angle > limit then return limit, math.min(rate, 0) end
-		if angle < -limit then return -limit, math.max(rate, 0) end
-		return angle, rate
+	-- A car parked across a hill has to lie with the hill. Without the ground
+	-- term the spring would hold it level and it would stand on one corner --
+	-- which is what OrientCF used to do for it, and OrientCF cannot express a
+	-- car on its roof.
+	local groundPitch, groundRoll = 0, 0
+	if grounded and groundNormal.Y >= MIN_RESTING_NORMAL_Y then
+		groundPitch, groundRoll = VehicleDefs.LeanForNormal(s.yaw, groundNormal)
 	end
-	s.rollAngle, s.rollRate = bound(s.rollAngle, s.rollRate, BODY_ANGLE_LIMIT)
-	s.pitchAngle, s.pitchRate = bound(s.pitchAngle, s.pitchRate, BODY_ANGLE_LIMIT)
 
-	-- THE LEAN THE WHEELS ARE ASKING FOR, on top of the load transfer above.
+	-- Load transfer only. The ground's own lean is the REFERENCE these are
+	-- measured against rather than part of the target -- see below.
+	s.rollTarget = math.rad(lateralG * def.bodyRoll)
+	s.pitchTarget = math.rad(longG * def.bodyPitch)
+
+	-- INTEGRATED, not eased. The difference is the whole feature: an ease can
+	-- only ever arrive at its target and stop, and a car that can only arrive
+	-- at a target cannot leave the ground rotating.
+	-- AGAINST THE GROUND, not against the world. A car parked across a
+	-- thirty-degree bank is thirty degrees from vertical and is not falling
+	-- over; a car leaning that far on the flat is most of the way onto its
+	-- roof. Measuring against the world made the first one indistinguishable
+	-- from the second, and every hillside a rollover.
+	--
+	-- The slope still pulls, and that goes in as its own term rather than as
+	-- part of the lean: gravity does not need the cornering fudge to reach a
+	-- car. See TipAccel.
+	-- THE TYRE FORCE, SPLIT. Most of what the tyres are doing on a hill is
+	-- holding the car on it, and that part is gravity: it must not be
+	-- multiplied by tipLoad, which exists to make up for a grip model tuned
+	-- below a real tyre. Counted once, at face value, a car sits on a
+	-- thirty-degree bank; counted with the fudge it rolls straight off one,
+	-- which is what the first version of this did.
+	local rollHold = gravity * math.sin(groundRoll)
+	local pitchHold = gravity * math.sin(groundPitch)
+
+	local rollAccel = VehicleDefs.TipAccel({
+		angle = (s.roll or 0) - groundRoll, rate = s.rollRate or 0,
+		accel = lateralG - rollHold, lean = s.rollTarget,
+		slopeAccel = rollHold,
+		supportMin = rollMin, supportMax = rollMax,
+		comHeight = def.comHeight, halfBase = halfTrack,
+		load = def.tipLoad, gravity = gravity,
+		stiffness = def.rollStiffness, damping = def.rollDamping,
+	})
+
+	local pitchAccel = VehicleDefs.TipAccel({
+		angle = (s.pitch or 0) - groundPitch, rate = s.pitchRate or 0,
+		accel = longG - pitchHold, lean = s.pitchTarget,
+		slopeAccel = pitchHold,
+		supportMin = pitchMin, supportMax = pitchMax,
+		comHeight = def.comHeight, halfBase = halfBase,
+		load = def.tipLoad, gravity = gravity,
+		stiffness = def.pitchStiffness, damping = def.pitchDamping,
+	})
+
+	s.rollRate = (s.rollRate or 0) + rollAccel * dt
+	s.pitchRate = (s.pitchRate or 0) + pitchAccel * dt
+	s.roll = (s.roll or 0) + s.rollRate * dt
+	s.pitch = (s.pitch or 0) + s.pitchRate * dt
+
+	-- Wrapped rather than clamped. A car that rolls all the way over comes
+	-- back onto its wheels and keeps going; one clamped at pi would stick on
+	-- its roof with the rate still fighting the stop.
+	local function wrap(a) return (a + math.pi) % (2 * math.pi) - math.pi end
+	s.roll = wrap(s.roll)
+	s.pitch = wrap(s.pitch)
+
+	-- THE LEAN THE WHEELS ARE ASKING FOR, on top of the attitude above, and
+	-- still drawn rather than simulated.
 	--
 	-- The chassis lies along the suspension NORMAL, which handles a slope and
 	-- is blind to a kerb: a kerb and the road beside it both point straight
@@ -1175,11 +1240,6 @@ local function step(s, dt)
 	-- Read from the DRAWN travel, which the render pass maintains, so the
 	-- body and the wheels are describing the same suspension rather than two
 	-- versions of it. That is a frame behind; on a decoration, invisible.
-	--
-	-- Its own spring, firmer and better damped than the load transfer: a body
-	-- following the ground should look attached to it, and the loose,
-	-- overshooting one next door is what makes cornering feel heavy. Sharing
-	-- a spring would make it one or the other.
 	local axleRollTarget, axlePitchTarget = VehicleDefs.AxleLean(def, s.rig.wheels, s.rig.wheelbase)
 
 	s.axleRoll, s.axleRollRate = dampedSpring(s.axleRoll or 0, s.axleRollRate or 0,
@@ -1187,53 +1247,40 @@ local function step(s, dt)
 	s.axlePitch, s.axlePitchRate = dampedSpring(s.axlePitch or 0, s.axlePitchRate or 0,
 		axlePitchTarget, def.bodyHz * 1.6, 0.75, dt)
 
+	-- Bounded, and the rate zeroed at the stop. This one IS a decoration, and
+	-- a decoration that can reach 90 degrees is a car lying on its side.
+	local function bound(angle, rate, limit)
+		if angle > limit then return limit, math.min(rate, 0) end
+		if angle < -limit then return -limit, math.max(rate, 0) end
+		return angle, rate
+	end
 	s.axleRoll, s.axleRollRate = bound(s.axleRoll, s.axleRollRate, BODY_ANGLE_LIMIT)
 	s.axlePitch, s.axlePitchRate = bound(s.axlePitch, s.axlePitchRate, BODY_ANGLE_LIMIT)
 
-	-- What is actually DRAWN, and what goes over the wire. The two leans are
-	-- kept apart above because they are different springs; from here on they
-	-- are one number, and the receiver undoes exactly this to recover the
-	-- physics frame its wheels belong in.
-	s.rollDrawn = s.rollAngle + s.axleRoll
-	s.pitchDrawn = s.pitchAngle + s.axlePitch
+	-- What goes over the wire, in degrees, and it is the DECORATION ONLY.
+	--
+	-- The receiver undoes exactly these to recover the frame the wheels
+	-- belong in, and the attitude is now part of that frame rather than a
+	-- lean applied to it -- a car on its side has its wheels on their sides
+	-- too. Sending the attitude here as well would have the receiver undo it
+	-- and draw the wheels of a rolled car standing neatly upright in the air.
+	s.rollDrawn = s.axleRoll
+	s.pitchDrawn = s.axlePitch
 
-	-- Slower than it was: the shell should look like it is catching up with
-	-- the ground rather than welded to it.
-	s.up = approach(s.up or targetUp, targetUp, 6, dt)
-	if s.up.Magnitude < 1e-3 then s.up = Vector3.yAxis end
-	s.up = s.up.Unit
+	-- Published for the debug panel: what the body is actually doing, in
+	-- degrees, because nobody reads radians off a HUD.
+	s.rollDeg = math.deg(s.roll)
+	s.pitchDeg = math.deg(s.pitch)
+	-- And against the ground, which is the number that says how close to
+	-- going over it is. On a bank the two differ by the bank.
+	s.rollLean = math.deg(s.roll - groundRoll)
+	s.pitchLean = math.deg(s.pitch - groundPitch)
 
-	-- NEGATED, both terms, and this is not a typo to tidy up later.
-	--
-	-- Roblox's yaw convention is that CFrame.Angles(0, t, 0).LookVector is
-	-- (-sin t, 0, -cos t), because the identity looks down -Z and LookVector
-	-- is the NEGATED third column of the matrix. So the direction that goes
-	-- with a yaw read out of ToEulerAnglesYXZ is (-sin, 0, -cos), and the
-	-- textbook (sin, 0, cos) is that direction rotated 180 degrees.
-	--
-	-- With the wrong sign the car still drives, still steers and still stops
-	-- at a wall -- it simply drives out of its own back bumper, which is very
-	-- easy to stare straight past.
-	-- Built from the ground normal so the car lies on a slope rather than
-	-- floating level over it. The yaw convention and both degenerate cases
-	-- live in VehicleDefs.OrientCF, shared with the server's settle pass --
-	-- one place for a sign that has already been wrong once.
-	-- TWO FRAMES, and keeping them apart is the whole of this fix.
-	--
-	-- s.cf is the PHYSICS frame: where the car is, which way it points, and
-	-- what it is lying on. Nothing decorative goes in it.
-	--
-	-- s.renderCf is that frame plus the body lean, and it exists only to be
-	-- drawn. It used to BE s.cf -- the lean was baked in -- and the next step
-	-- then read `forward` and `right` off a rolled frame and dotted gravity
-	-- into them. A car tilted by one degree therefore asked for nearly two
-	-- degrees of lean, which asked for four, and the car flipped onto its
-	-- side and stayed there: once vertical, the suspension rays point
-	-- sideways, find a wall, and report it as the ground to lie on.
-	--
-	-- The header has always said pitch and roll are DRAWN, not simulated.
-	-- This is the code finally agreeing with it.
-	s.cf = VehicleDefs.OrientCF(pos, s.yaw, s.up)
+	-- Kept so anything still reading it -- the settle pass, a gamemode -- gets
+	-- the car's real up rather than a stale one.
+	s.up = (VehicleDefs.AttitudeCF(Vector3.zero, s.yaw, s.pitch, s.roll)).UpVector
+
+	s.cf = VehicleDefs.AttitudeCF(pos, s.yaw, s.pitch, s.roll)
 
 	--------------------------------------------------------------
 	-- 11b. DEPENETRATION
@@ -1442,8 +1489,16 @@ local function startDriving(model, def, index)
 		slip = 0,
 		wheelSpin = 0,
 		up = Vector3.yAxis,
-		rollAngle = 0,
-		pitchAngle = 0,
+		-- THE ATTITUDE, in radians, and it is state rather than decoration:
+		-- a car that leaves a ramp rotating is still rotating when it lands,
+		-- which is the whole of why these carry a rate.
+		roll = 0,
+		rollRate = 0,
+		pitch = 0,
+		pitchRate = 0,
+		-- The suspension's own lean on top, still drawn, still in degrees.
+		axleRoll = 0,
+		axlePitch = 0,
 		groundFrac = 0,
 		-- THE STARTER. Counted down by the step, and the whole of why the car
 		-- does not pull away under its own crank sound.
@@ -2036,6 +2091,13 @@ function Vehicle.Update(deltaTime)
 		State.vehicleFanOn = sim.fanOn == true
 		State.vehicleCranking = (sim.crankRemaining or 0) > 0
 		State.vehicleDef = sim.def
+		-- THE ATTITUDE, against the ground rather than against the world: on
+		-- a bank the two differ by the bank, and the one that says how close
+		-- the car is to going over is the first.
+		State.vehicleRoll = sim.rollLean
+		State.vehiclePitch = sim.pitchLean
+		State.vehicleDrive = sim.def.driveLayout
+		State.vehicleDriveGrip = sim.driveGrip
 	else
 		State.vehicleSpeed = 0
 	end

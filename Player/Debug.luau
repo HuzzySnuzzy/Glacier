@@ -706,6 +706,28 @@ function Debug.Update(deltaTime)
 		table.insert(lines, row("grip", v("%6.2f", num(State.vehicleSurface, 1)),
 			dim("   surface   wheels down "), flag(State.vehicleGrounded)))
 
+		-- HOW FAR OVER IT IS, measured against the ground rather than the
+		-- world: a car on a bank is tilted and is not falling, and the number
+		-- that matters is the one that says which of the two this is.
+		--
+		-- Coloured off the roll, because roll is the one that ends the drive.
+		local lean = math.abs(num(State.vehicleRoll))
+		table.insert(lines, row("lean",
+			vc(lean > 45 and PALETTE.bad or (lean > 20 and PALETTE.warn or PALETTE.value),
+				"%6.1f", num(State.vehicleRoll)),
+			dim("   roll   pitch "), v("%.1f", num(State.vehiclePitch)),
+			dim(" deg")))
+
+		-- WHICH WHEELS ARE DRIVEN and whether they are anywhere near the
+		-- road. A rear-drive car with its back wheels in the air has no
+		-- drive, and that is invisible from the throttle.
+		local driveGrip = num(State.vehicleDriveGrip, 1)
+		table.insert(lines, row("drive",
+			vc(driveGrip < 0.5 and PALETTE.warn or PALETTE.value,
+				"%6.2f", driveGrip),
+			dim("   %s   wheels down",
+				string.upper(tostring(State.vehicleDrive or "rwd")))))
+
 		-- PER WHEEL, and the whole reason the surface work is worth having:
 		-- one line that says which corner is on what and how hard it is
 		-- sliding. Two wheels in the grass is obvious here and invisible in

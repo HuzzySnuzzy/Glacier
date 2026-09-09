@@ -134,6 +134,75 @@ local DEFAULTS = {
 	-- car is, and it is second-order on purpose: a first-order approach can
 	-- only ease toward its target and stop, which reads as a car whose body
 	-- is bolted solid. Under-damped, so it overshoots and comes back.
+	--=================================================================
+	-- STANDING UP
+	--=================================================================
+	-- HOW HIGH THE WEIGHT IS, above the wheels. The single number that
+	-- decides whether a car rolls over, and the only one anybody needs to
+	-- turn a saloon into a van: the tipping point is halfTrack / comHeight in
+	-- g, so raising this lowers it in exact proportion.
+	--
+	-- Measured from the contact patches rather than from the chassis centre,
+	-- because that is what the moment arm actually is.
+	comHeight    = 1.5,
+
+	-- HOW MUCH OF THE CORNERING LOAD THE BODY FEELS AS A ROLLING MOMENT.
+	--
+	-- 1 is the textbook: the car tips when the lateral acceleration exceeds
+	-- halfTrack / comHeight, which for these numbers is about 2g. No car in
+	-- this engine can ever reach it -- `grip` caps lateral acceleration at 34
+	-- studs/s^2, which against a gravity of 72.7 is less than half a g -- so a
+	-- textbook car here can be cornered as hard as the tyres allow and will
+	-- never come off its wheels, which is where this started.
+	--
+	-- So the moment is scaled. It is a fudge and it is a deliberate one: the
+	-- grip model is tuned well below a real tyre on purpose, and this is the
+	-- one number that says how much taller the car should FEEL than it is.
+	-- At the shipped value a sedan held at its grip limit leans hard and
+	-- holds; it is the swerve -- the body thrown the other way with the roll
+	-- rate still in it -- that puts a wheel over the edge, which is the
+	-- behaviour being asked for.
+	--
+	-- Set it to 1 for textbook geometry and a car that cannot be rolled.
+	tipLoad      = 3.5,
+
+	-- The torsional springs holding the body against its lean, and the
+	-- damping on both axes. These are the numbers that were bodyHz and
+	-- bodyDamp when the lean was a decoration; they do the same job and now
+	-- they can be overpowered, which is the point.
+	-- Deliberately UNDER-DAMPED in roll. The overshoot is not a rough edge --
+	-- it is the mechanism: a car that swerves is thrown one way while the
+	-- tyres start pushing it the other, and the momentum in that is what puts
+	-- a wheel over the edge at a cornering load a steady bend never would.
+	-- Damp it out and you get a car that leans neatly and can never fall over,
+	-- which is where this started.
+	--
+	-- At the shipped numbers a sedan held flat out round a long bend leans
+	-- about ten degrees and stays there; swerved with about eight tenths of a
+	-- second between reversals it is on its roof inside a few cycles. Both
+	-- measured through the whole sim, not the model alone -- see the swerve
+	-- test, which sweeps the rate rather than assuming one.
+	rollStiffness  = 45,
+	rollDamping    = 1.2,
+
+	-- Pitch is stiffer and much better damped, because a car pitches far less
+	-- freely than it rolls and a nose that kept bobbing after a stop would
+	-- read as a fault.
+	pitchStiffness = 70,
+	pitchDamping   = 5.0,
+
+	-- WHICH WHEELS ARE DRIVEN: "rwd", "fwd" or "awd".
+	--
+	-- It decides which end has to be on the ground for the car to move at
+	-- all. A rear-wheel-drive car with its back wheels in the air has no
+	-- drive, however hard you press.
+	--
+	-- driveLAYOUT, because `drive` next door is already the engine's force in
+	-- studs per second squared -- derived from horsepower, never authored.
+	-- Two fields called drive, one a number and one a string, is a bug with a
+	-- date on it.
+	driveLayout  = "rwd",
+
 	bodyHz       = 1.1,
 	bodyDamp     = 0.35,      -- well under 1: that overshoot IS the bounce
 
@@ -752,6 +821,231 @@ function VehicleDefs.OrientCF(position, yaw, up)
 	if look.Magnitude < 1e-3 then look = heading end
 
 	return CFrame.lookAt(position, position + look.Unit, up)
+end
+
+--=====================================================================
+-- TIPPING OVER
+--=====================================================================
+-- ROLL AND PITCH ARE SIMULATED FROM HERE ON, not drawn.
+--
+-- They used to be decoration: a spring that leaned the shell a few degrees
+-- and was bounded so it could never reach anything like vertical. That is
+-- fine right up to the two moments people expect a car to fall over, and it
+-- could not do either -- you could corner at any speed you liked and sit
+-- balanced on a cliff edge with half the car in the air.
+--
+-- ONE MODEL COVERS BOTH, and it is the one from the textbook: a car stands up
+-- for as long as its weight lands between the wheels holding it up. Roll and
+-- pitch are the same problem measured across the car and along it, so this is
+-- written once and used twice -- writing it twice is writing the sign error
+-- twice, and this engine has got a sign wrong five times already.
+--
+-- THE CONVENTION, stated as what the body DOES, because that is the only form
+-- that survives being read back:
+--
+--   the AXIS u is the car's RIGHT for roll and its FORWARD for pitch
+--   a positive ANGLE leans the body toward -u
+--        roll  positive drops the LEFT side
+--        pitch positive lifts the NOSE
+--   a positive ACCELERATION is toward +u -- the tyre force, not gravity
+--   the ANGLE is measured against the GROUND, not against the world: a car
+--        parked on a bank is not falling over, and one leaning that far on
+--        the flat is
+--   SUPPORT offsets are measured along +u from the car's centreline
+--   LOAD scales how much of that acceleration the body feels; see tipLoad
+--
+-- Both of those angle statements match VehicleDefs.AxleLean and the body
+-- spring the sim already had, so nothing downstream had to be re-learned.
+
+-- WHERE THE WHEELS THAT ARE ACTUALLY DOWN HOLD THE CAR UP, as a span along
+-- one axis. nil when nothing is down at all, which is a car in the air and a
+-- different case entirely -- see TipAccel.
+--
+-- Longitudinal offsets come from the `front` FLAG rather than from the
+-- wheel's own Z, because the two disagree: the nominal layout puts the front
+-- wheels at +Z and a model-derived rig puts them at -Z (Roblox forward is
+-- -Z), and both set the flag correctly. Reading Z here would give the right
+-- answer on generated cars and the mirror image of it on authored ones.
+function VehicleDefs.SupportSpan(wheels, contacts, axis, halfBase)
+	local min, max
+	for i, wheel in ipairs(wheels) do
+		if contacts and contacts[i] then
+			local offset
+			if axis == "forward" then
+				offset = wheel.front and halfBase or -halfBase
+			else
+				offset = wheel.rest and wheel.rest.X or wheel.offset.X
+			end
+			if not min or offset < min then min = offset end
+			if not max or offset > max then max = offset end
+		end
+	end
+	return min, max
+end
+
+-- ONE AXIS OF A CAR DECIDING WHETHER TO STAY ON ITS WHEELS.
+--
+-- Returns an angular acceleration, in radians per second squared.
+--
+-- The whole thing is one question: where does the weight land, and is that
+-- still between the wheels? Two things move it --
+--
+--   LEANING, which carries the mass out over the low side
+--   CORNERING or BRAKING, which throws it the other way from the tyre force
+--
+-- -- and both are measured as an offset along the axis, in studs, so they
+-- simply add. While that offset is inside the wheels the suspension holds the
+-- car and the spring below is what you feel. Once it is outside them the car
+-- is pivoting on its outer wheels and gravity finishes the job, which is a
+-- rollover if it happened across the car and a nose-dive off a ledge if it
+-- happened along it.
+--
+-- The static rollover threshold falls straight out of it rather than being a
+-- number anybody tuned: the weight reaches the outer wheels when
+-- comHeight * (lateral / gravity) exceeds half the track, so a car tips at
+-- halfTrack / comHeight g -- about 1.2g on the shipped sedan, which is what a
+-- road car does.
+--
+-- NOTHING AT ALL IN THE AIR. No support, no spring, no righting: whatever the
+-- car was rotating at when it left the ground is what it is still rotating at
+-- when it lands, which is the difference between a jump and a lift.
+function VehicleDefs.TipAccel(opts)
+	local angle = opts.angle or 0
+	local rate = opts.rate or 0
+	local gravity = math.max(opts.gravity or 72.7, 1e-3)
+	local comHeight = math.max(opts.comHeight or 1, 1e-3)
+	local halfBase = math.max(opts.halfBase or 1, 1e-3)
+
+	-- AIRBORNE. Deliberately not even damped: air does not stop a car
+	-- spinning, and a car that quietly stopped mid-flip would land flat and
+	-- make every jump look the same.
+	if not (opts.supportMin and opts.supportMax) then return 0 end
+
+	-- Where the weight lands, along +u, from the centreline.
+	--
+	-- Leaning toward -u (positive angle) carries the mass that way, so the
+	-- first term is negative for a positive angle. An acceleration toward +u
+	-- throws the mass toward -u -- you are thrown to the outside of a corner,
+	-- not the inside -- so the second is too.
+	local proj = -comHeight * math.sin(angle)
+		- comHeight * (opts.load or 1) * ((opts.accel or 0) / gravity)
+		-- THE SLOPE'S OWN PULL, and deliberately NOT scaled by `load`. A car
+		-- parked across a bank really is being pulled downhill and really
+		-- does roll off a steep enough one; multiplying that by the same
+		-- fudge the cornering load gets would make every hillside a death
+		-- trap, because gravity does not need help reaching a car.
+		- comHeight * ((opts.slopeAccel or 0) / gravity)
+
+	local overhang = 0
+	if proj < opts.supportMin then
+		overhang = proj - opts.supportMin
+	elseif proj > opts.supportMax then
+		overhang = proj - opts.supportMax
+	end
+
+	-- Moment of inertia per unit mass about the wheel it is pivoting on. A
+	-- point mass at the centre of gravity, which is crude and is the right
+	-- kind of crude: it makes a tall narrow car tip faster than a low wide
+	-- one, which is the whole behaviour anybody wants out of this.
+	local inertia = comHeight * comHeight + halfBase * halfBase
+
+	-- HOW MUCH LOAD IS LEFT ON THE INNER WHEELS, 1 with the weight in the
+	-- middle and 0 with it over the outer ones. The suspension fades out with
+	-- it, so a car going up onto two wheels is not still being held level by
+	-- a spring that has nothing to push against.
+	--
+	-- A span of zero -- one wheel down, or one axle -- means no hold at all,
+	-- which is what makes the cliff edge in the picture a nose-dive rather
+	-- than a car leaning on thin air.
+	local span = opts.supportMax - opts.supportMin
+	local margin = math.min(proj - opts.supportMin, opts.supportMax - proj)
+	local hold = (span > 1e-3) and math.clamp(margin / (span * 0.5), 0, 1) or 0
+
+	local accel = -(opts.damping or 3) * rate
+
+	-- The suspension, holding the body at the lean the road and the corner ask
+	-- for. This is the part that was already there and that already feels
+	-- right, so it is kept exactly as it was: a spring toward a target, not a
+	-- spring toward flat.
+	accel += hold * (opts.stiffness or 40) * ((opts.lean or 0) - angle)
+
+	-- And gravity, about whichever wheels are still down. Zero until the
+	-- weight leaves them, so this does nothing at all to a car being driven
+	-- normally and everything to one that has run out of tyre.
+	accel += -gravity * overhang / inertia
+
+	return accel
+end
+
+-- THE LEAN THE GROUND IS ASKING FOR, as roll and pitch in the car's own yaw
+-- frame. A car parked across a hill leans with the hill; without this the
+-- spring above would hold it level and it would stand on one corner.
+--
+-- Returned in the same convention as everything else here: positive roll
+-- drops the left side, positive pitch lifts the nose.
+function VehicleDefs.LeanForNormal(yaw, normal)
+	if not normal or normal.Magnitude < 1e-3 then return 0, 0 end
+	normal = normal.Unit
+
+	local heading = VehicleDefs.HeadingFromYaw(yaw)
+	local right = heading:Cross(Vector3.yAxis)
+	if right.Magnitude < 1e-3 then return 0, 0 end
+	right = right.Unit
+
+	local up = normal:Dot(Vector3.yAxis)
+	if up < 1e-3 then return 0, 0 end
+
+	-- A normal leaning toward the car's right is a surface whose right side is
+	-- LOW, so the body drops that way -- which is a negative roll.
+	local roll = -math.atan2(normal:Dot(right), up)
+	-- A normal leaning forward is a surface running downhill ahead of the car,
+	-- so the nose drops: negative pitch.
+	local pitch = -math.atan2(normal:Dot(heading), up)
+
+	return pitch, roll
+end
+
+-- The car's frame from its yaw and its own attitude, rather than from a
+-- surface normal. OrientCF answers "lying on this", which cannot express a
+-- car on its roof; this answers "rotated to here", which can.
+--
+-- The order is yaw, then pitch, then roll, applied on the car's own axes --
+-- the same order CFrame.Angles(pitch, 0, roll) has always been applied in on
+-- top of the heading, so a car that is not tipping looks exactly as it did.
+function VehicleDefs.AttitudeCF(position, yaw, pitch, roll)
+	return CFrame.new(position)
+		* CFrame.Angles(0, yaw, 0)
+		* CFrame.Angles(pitch or 0, 0, roll or 0)
+end
+
+-- Whether the car has anything to push against: how much of the DRIVEN axle
+-- is on the ground, 0 to 1.
+--
+-- A rear-wheel-drive car with its back wheels in the air has no drive, and
+-- the sim used to scale power by how much of the WHOLE car was down -- so a
+-- car balanced on its front wheels still pulled away at half throttle, and
+-- swapping a car to front-wheel drive changed nothing about which end had to
+-- be on the road.
+function VehicleDefs.DrivenGrip(def, wheels, contacts)
+	local layout = string.lower(tostring(def.driveLayout or "rwd"))
+
+	local total, down = 0, 0
+	for i, wheel in ipairs(wheels) do
+		local driven = (layout == "awd")
+			or (layout == "fwd" and wheel.front)
+			or (layout == "rwd" and not wheel.front)
+		if driven then
+			total += 1
+			if contacts and contacts[i] then down += 1 end
+		end
+	end
+
+	-- A rig with no wheels on the driven axle at all -- a three-wheeler named
+	-- oddly, a model whose front/rear split went wrong -- drives rather than
+	-- being inert, because a car that cannot move and says nothing is the
+	-- worse failure.
+	if total == 0 then return 1 end
+	return down / total
 end
 
 --=====================================================================
@@ -1497,6 +1791,19 @@ local ATTRIBUTE_ALIASES = {
 	BodyRoll      = "bodyRoll",
 	BodyPitch     = "bodyPitch",
 	BodyHz        = "bodyHz",
+
+	-- Standing up
+	COMHeight     = "comHeight",
+	CenterOfMass  = "comHeight",
+	TipLoad       = "tipLoad",
+	RollSensitivity = "tipLoad",
+	RollStiffness = "rollStiffness",
+	RollDamping   = "rollDamping",
+	PitchStiffness = "pitchStiffness",
+	PitchDamping  = "pitchDamping",
+	Drive         = "driveLayout",
+	Drivetrain    = "driveLayout",
+	DriveLayout   = "driveLayout",
 	BodyDamp      = "bodyDamp",
 	Restitution   = "restitution",
 	CrashLoss     = "crashLoss",
