@@ -91,6 +91,48 @@ end
 -- Ranked by SURFACE distance, not centre distance. A car and a cartridge case
 -- ranked by their centres would have the car lose while you stand against its
 -- door, which is not what "closest" means to the person standing there.
+-- ONE JUDGEMENT, used by the pick and by the report.
+--
+-- Returns a verdict string and, when it is "ok", how good the candidate is.
+-- Kept as one function on purpose: a report that recomputed the rules would
+-- drift from them, and a report that disagrees with the thing it is reporting
+-- on is worse than no report -- it sends you looking in the wrong place.
+local function judge(c, eye, look, from, range, slack)
+	local radius = num(c.radius, 1)
+
+	-- REACH, from the body -- and a candidate may state its own, in both how
+	-- far and how measured.
+	--
+	-- A car is the case. The server measures to the chassis BOX and this would
+	-- measure to a sphere around it, which for a van is four studs of
+	-- disagreement -- and every stud of it is a prompt offering something the
+	-- server then refuses, which is worse than no prompt. So the vehicle
+	-- source hands over the same number the server will compute, and its own
+	-- cvar to check it against.
+	local reach = num(c.reach, (c.position - from).Magnitude - radius)
+	local limit = num(c.range, range)
+	if reach > limit then
+		return ("out of reach (%.1f > %.1f studs)"):format(reach, limit)
+	end
+
+	-- AIM, from the camera.
+	local to = c.position - eye
+	local along = to:Dot(look)
+
+	-- Behind you is never a target. Allowed to be slightly negative so
+	-- something you are standing inside still counts.
+	if along <= -radius then return "behind you" end
+
+	local perpendicular = (to - look * along).Magnitude
+	local allowance = radius + slack
+	if perpendicular > allowance then
+		return ("not pointing at it (%.1f off, needs %.1f)")
+			:format(perpendicular, allowance)
+	end
+
+	return "ok", math.max(reach, 0)
+end
+
 function Interact.Pick(candidates, eye, look, from, opts)
 	opts = opts or {}
 	local range = num(opts.range, 12)
@@ -98,38 +140,29 @@ function Interact.Pick(candidates, eye, look, from, opts)
 
 	local best, bestScore
 	for _, c in ipairs(candidates) do
-		local radius = num(c.radius, 1)
-
-		-- REACH, from the body -- and a candidate may state its own, in both
-		-- how far and how measured.
-		--
-		-- A car is the case. The server measures to the chassis BOX and this
-		-- would measure to a sphere around it, which for a van is four studs
-		-- of disagreement -- and every stud of it is a prompt offering
-		-- something the server then refuses, which is worse than no prompt.
-		-- So the vehicle source hands over the same number the server will
-		-- compute, and its own cvar to check it against.
-		local reach = num(c.reach, (c.position - from).Magnitude - radius)
-		if reach <= num(c.range, range) then
-			-- AIM, from the camera.
-			local to = c.position - eye
-			local along = to:Dot(look)
-
-			-- Behind you is never a target. Allowed to be slightly negative so
-			-- something you are standing inside still counts.
-			if along > -radius then
-				local perpendicular = (to - look * along).Magnitude
-				if perpendicular <= radius + slack then
-					local score = math.max(reach, 0)
-					if not bestScore or score < bestScore then
-						best, bestScore = c, score
-					end
-				end
-			end
+		local verdict, score = judge(c, eye, look, from, range, slack)
+		if verdict == "ok" and (not bestScore or score < bestScore) then
+			best, bestScore = c, score
 		end
 	end
 
 	return best, bestScore
+end
+
+-- Every candidate and what happened to it. What `use_report` prints, and the
+-- answer to "there is no prompt and I cannot tell why" -- which, on a system
+-- whose whole failure mode is silence, is not a luxury.
+function Interact.Explain(candidates, eye, look, from, opts)
+	opts = opts or {}
+	local range = num(opts.range, 12)
+	local slack = num(opts.slack, 1.5)
+
+	local out = {}
+	for _, c in ipairs(candidates) do
+		local verdict, score = judge(c, eye, look, from, range, slack)
+		table.insert(out, { candidate = c, verdict = verdict, score = score })
+	end
+	return out
 end
 
 --=====================================================================
@@ -264,6 +297,19 @@ end)
 local losParams = RaycastParams.new()
 losParams.FilterType = Enum.RaycastFilterType.Exclude
 
+-- A WALL IS SOMETHING YOU COULD WALK INTO.
+--
+-- Without this the very first thing the ray hits is the weapon in your own
+-- hands: the viewmodel is parented to the Camera, which is where this ray
+-- starts, so it sat about a stud out and reported every rifle, every car and
+-- every door in the world as being behind something. No prompt, anywhere,
+-- ever -- and no way to tell that from the feature simply not working.
+--
+-- The same reasoning the movement and vehicle casts already use. Effects,
+-- viewmodels and decoration are not geometry, and a sight test that treats
+-- them as geometry is a sight test that always says no.
+losParams.RespectCanCollide = true
+
 -- Can we actually see it, or is there a wall in the way?
 --
 -- One cast, against the WINNER only. Casting per candidate would be a cast
@@ -273,7 +319,11 @@ losParams.FilterType = Enum.RaycastFilterType.Exclude
 local function visible(instance, eye, position)
 	if Config.cl_useLos == false then return true end
 
-	local ignore = { instance }
+	-- The camera, because the viewmodel hangs off it and a collidable one
+	-- would get past RespectCanCollide above. Belt and braces on purpose:
+	-- this is the failure that took the whole feature down, and it did it
+	-- silently.
+	local ignore = { instance, cam }
 	if State.playerBody then table.insert(ignore, State.playerBody) end
 	if State.playerPuppet then table.insert(ignore, State.playerPuppet) end
 
@@ -505,5 +555,78 @@ end
 function Interact.Init()
 	build()
 end
+
+--=====================================================================
+-- CONSOLE
+--=====================================================================
+
+-- WHY THERE IS NO PROMPT.
+--
+-- Everything here fails by showing nothing, which is the same thing it does
+-- when there is genuinely nothing to use -- and the same thing it did when a
+-- line-of-sight test was quietly stopped by the player's own viewmodel. One
+-- command that lists every candidate and what happened to it is the
+-- difference between that being a five-second answer and an afternoon.
+Config.Command("use_report", {
+	args = {},
+	help = "list what +use can see, and why each candidate did or did not win",
+	run = function(ctx)
+		local body = State.playerBody
+		if not (body and body.Parent) then
+			ctx.reply("[use] no body")
+			return
+		end
+		if State.inVehicle then
+			ctx.reply("[use] seated -- prompts are off while you are in a car")
+			return
+		end
+
+		local cf = cam.CFrame
+		local from = body:IsA("BasePart") and body.Position or body:GetPivot().Position
+		local ctxInfo = { eye = cf.Position, look = cf.LookVector, from = from }
+
+		local candidates = gather(ctxInfo)
+		local opts = {
+			range = num(Config.sv_pickupRange, 12),
+			slack = num(Config.cl_useSlack, 1.5),
+		}
+
+		local lines = {
+			("[use] %d candidate%s   prompts %s   sight check %s"):format(
+				#candidates, #candidates == 1 and "" or "s",
+				Config.cl_usePrompts == false and "OFF" or "on",
+				Config.cl_useLos == false and "off" or "ON"),
+		}
+
+		for _, entry in ipairs(Interact.Explain(candidates, ctxInfo.eye,
+			ctxInfo.look, from, opts)) do
+			local c = entry.candidate
+			local verdict = entry.verdict
+
+			-- The sight test is only run on the winner in the real update --
+			-- one cast, not one per rifle on the floor -- but the report runs
+			-- it on everything, because "it qualified and then something was
+			-- in the way" is exactly the state that has no other symptom.
+			if verdict == "ok" and not visible(c.instance, ctxInfo.eye, c.position) then
+				verdict = "BEHIND SOMETHING"
+			end
+
+			table.insert(lines, ("  %-9s %-22s %s"):format(
+				c.kind or "?", tostring(c.label or c.instance.Name), verdict))
+		end
+
+		if #candidates == 0 then
+			table.insert(lines,
+				"  nothing offered -- no drops, no cars with a free seat, " ..
+				"nothing tagged " .. Interact.TAG .. " near you")
+		end
+
+		local current = Interact.Target()
+		table.insert(lines, ("  target: %s"):format(
+			current and Interact.PromptText(current) or "none"))
+
+		ctx.reply(table.concat(lines, "\n"))
+	end,
+})
 
 return Interact
