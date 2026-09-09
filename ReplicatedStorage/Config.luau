@@ -485,6 +485,21 @@ Define("sv_pickupLifetime", 90, FCVAR.REPLICATED)   -- seconds before a drop des
 Define("sv_pickupMax", 40, FCVAR.REPLICATED)        -- oldest is culled past this; 0 = unlimited
 
 --=====================================================================
+-- USE PROMPTS
+--=====================================================================
+-- What +use would do, shown before you press it. CLIENT throughout: none of
+-- this decides what the server allows, only what this player is told and how
+-- forgiving their aim has to be.
+--
+-- The RANGE is deliberately not here. Reach is sv_pickupRange, which the
+-- server enforces -- a client range of its own would produce prompts for
+-- things the server then refuses, which is a worse failure than no prompt.
+Define("cl_usePrompts", true)      -- show "[E] Pick up ..." on what you are looking at
+Define("cl_useSlack", 1.5)         -- studs of aim forgiveness around a thing's own size
+Define("cl_useLos", true)          -- and you must be able to see it
+Define("cl_useRate", 20)           -- scans per second; the label does not need your frame rate
+
+--=====================================================================
 -- CROSSHAIR  (CS 1.6 cvar names)
 --=====================================================================
 

@@ -436,7 +436,44 @@ end
 -- The shared body of every pickup attempt. Returns ok, message -- the message
 -- is worth showing either way, which is what makes a failed pickup diagnosable
 -- instead of silent.
-local function attemptPickup(plr, range, swap)
+-- How far a named pickup is from the player, or nil if it is not a pickup at
+-- all. Separate from nearestPickup because the question is different: this
+-- one has a candidate and wants to know whether it is allowed.
+local function distanceTo(plr, object)
+	if not (object and pickups[object]) then return nil end
+	local from = Glacier.PositionOf(plr, "player")
+	local position = object.Parent and positionOf(object) or nil
+	if not (from and position) then return nil end
+	return (position - from).Magnitude
+end
+
+local function attemptPickup(plr, range, swap, wanted)
+	-- THE ONE THE CLIENT AIMED AT, when it named one.
+	--
+	-- The client draws a label over exactly one thing and says pressing the
+	-- key will take THAT. Choosing nearest-first here regardless made the
+	-- label a guess: two rifles a foot apart and you got whichever your feet
+	-- were closer to, not the one you were looking at.
+	--
+	-- Still range-checked, and still refused if it is not a pickup: what the
+	-- client chooses is which of the legal options happens, never whether an
+	-- illegal one does.
+	if wanted ~= nil then
+		local distance = distanceTo(plr, wanted)
+		if not distance then
+			-- Not a pickup, gone, or never was one. Falls THROUGH to nearest
+			-- rather than refusing: a drop taken by somebody else between the
+			-- press and the packet is ordinary, and answering "no" to it would
+			-- make a contested pickup feel broken rather than lost.
+			wanted = nil
+		elseif distance > range then
+			return false, ("%s is %.1f studs away (sv_pickupRange %s)")
+				:format(tostring(pickups[wanted].class), distance, tostring(range))
+		else
+			return takePickup(plr, wanted, swap)
+		end
+	end
+
 	local object, distance, reason = nearestPickup(plr)
 	if not object then return false, reason end
 
@@ -485,10 +522,15 @@ DropWeapon.OnServerEvent:Connect(function(plr, slot, velocity)
 	feedback(plr, "drop", ok, ok and ("dropped " .. result:GetAttribute("Class")) or result)
 end)
 
-PickupWeapon.OnServerEvent:Connect(function(plr)
+PickupWeapon.OnServerEvent:Connect(function(plr, wanted)
 	if throttled(plr) then return end
 
-	local ok, result = attemptPickup(plr, Config.Get("sv_pickupRange") or 8, true)
+	-- Validated as an Instance and nothing more: attemptPickup checks it is a
+	-- live pickup and that it is in reach, which is the whole of what this
+	-- argument is allowed to decide.
+	if typeof(wanted) ~= "Instance" then wanted = nil end
+
+	local ok, result = attemptPickup(plr, Config.Get("sv_pickupRange") or 8, true, wanted)
 	feedback(plr, "pickup", ok, ok and ("picked up " .. tostring(result)) or result)
 end)
 

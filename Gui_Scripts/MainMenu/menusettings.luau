@@ -534,6 +534,13 @@ if Input then
 		if entry.order == 10 then section("Controls", "Combat") end
 		if entry.order == 13 then section("Controls", "Weapons") end
 		if entry.order == 16 then section("Controls", "Interface") end
+		-- DRIVING IS ITS OWN KEYBOARD, and the heading has to say so: these
+		-- rows show W and S exactly as the movement rows above them do, and
+		-- without a line between them they read as the same rows listed
+		-- twice. See the vehicle bind set in Input.
+		if entry.order == 22 then
+			section("Controls", "Vehicle -- only while driving")
+		end
 
 		table.insert(bindRefreshers, bindRow(entry))
 	end
@@ -757,6 +764,19 @@ cvarSlider("Video", "cl_crosshairalpha", "Alpha",
 section("Video", "World")
 
 cvarToggle("Video", "cl_tracers", "Bullet tracers")
+
+section("Video", "Use prompts")
+
+cvarToggle("Video", "cl_usePrompts", "Show use prompts",
+	"A label on the thing you are looking at, saying what the use key " ..
+	"will do to it. Turning this off hides the label; it does not change " ..
+	"what the key picks up.")
+cvarToggle("Video", "cl_useLos", "Require line of sight",
+	"You must be able to see a thing to use it, rather than reaching " ..
+	"through the wall it is behind.")
+cvarSlider("Video", "cl_useSlack", "Aim forgiveness",
+	"Studs of slop around a thing's own size. Higher is easier to point at " ..
+	"and quicker to grab the wrong one of two.", 0, 5, 0.1, two)
 
 --=====================================================================
 -- VEHICLES

@@ -15,6 +15,13 @@ return {
 	-- Player Objects
 	playerBody = nil,
 	playerPuppet = nil,
+
+	-- DRIVING, off the vehicle bind set rather than the walking one. See the
+	-- note on the two bind tables in Input.
+	vehicleThrottleAxis = 0,
+	vehicleSteerAxis = 0,
+	vehicleHandbrake = false,
+	vehicleExitRequested = false,
 	viewmodel = nil,
 	prevBodyPos  = nil,
 	curBodyPos   = nil,

@@ -43,6 +43,8 @@ local Config      = require(ReplicatedStorage:WaitForChild("Config"))
 local VehicleDefs = require(ReplicatedStorage:WaitForChild("VehicleDefs"))
 local VehicleFX   = require(script.Parent.VehicleFX)
 local State       = require(script.Parent.State)
+local Interact    = require(script.Parent.Interact)
+local Input       = require(script.Parent.Input)
 
 local plr = Players.LocalPlayer
 local cam = workspace.CurrentCamera
@@ -566,10 +568,14 @@ local function step(s, dt)
 	--
 	-- Every binding still works, because Input publishes these from the same
 	-- +forward / +moveleft buttons the movement code reads.
-	local throttleAxis = math.clamp(num(State.forwardMoveAxis, 0), -1, 1)
-	local steerAxis = math.clamp(num(State.sideMoveAxis, 0), -1, 1)
+	-- THE CAR'S KEYS, not the walking ones. Same physical keys by default and
+	-- separately bindable, which is the point: see the vehicle bind set in
+	-- Input. Reading forwardMoveAxis here is what made "vehicle controls" a
+	-- thing that could not be rebound.
+	local throttleAxis = math.clamp(num(State.vehicleThrottleAxis, 0), -1, 1)
+	local steerAxis = math.clamp(num(State.vehicleSteerAxis, 0), -1, 1)
 
-	local handbrake = State.spaceHeld == true
+	local handbrake = State.vehicleHandbrake == true
 
 	--------------------------------------------------------------
 	-- 2. SUSPENSION
@@ -1530,6 +1536,10 @@ local function onStateChange(packet)
 		State.vehicleModel = model
 		setViewmodelHidden(true)
 
+		-- THE CAR'S KEYBOARD. From here W is the throttle rather than forward,
+		-- and every key the vehicle set does not claim still does what it did.
+		Input.SetContext("vehicle")
+
 		if packet.seat == 1 then
 			startDriving(model, def, packet.seat)
 		else
@@ -1555,6 +1565,9 @@ local function onStateChange(packet)
 		State.vehicleSpool, State.vehicleDef = nil, nil
 		State.vehicleFan, State.vehicleFanOn = nil, nil
 		State.vehicleCranking = nil
+		-- Back to walking, which also releases whatever the car was holding:
+		-- stepping out with the throttle down would otherwise leave it latched.
+		Input.SetContext("player")
 		stopDriving()
 		setViewmodelHidden(false)
 		camPos = nil   -- so the next car does not lerp in from the last one
@@ -1570,85 +1583,117 @@ end
 -- USE
 --=====================================================================
 
--- The nearest vehicle with a free seat, measured to the chassis SURFACE for
--- the same reason the server measures it that way.
-local function nearestFreeVehicle()
+-- Is there anywhere to sit? Offering a full car means +use does nothing and
+-- eats the press that would have picked up a gun.
+--
+-- SeatCount is published by the server when it registers the vehicle, because
+-- how many seats a car has is a property of the MODEL and this must not build
+-- a rig for every candidate on screen.
+local function hasFreeSeat(model)
+	local seatCount = model:GetAttribute("SeatCount") or 0
+	for i = 1, seatCount do
+		local occupant = model:GetAttribute(("Seat%d"):format(i))
+		if not occupant or occupant == 0 then return true end
+	end
+	return false
+end
+
+-- Distance from the body to the chassis SURFACE, measured against the box
+-- rather than a sphere around it -- which is how the server measures it, and
+-- the two answers have to agree or the prompt offers a car the server then
+-- refuses.
+local function surfaceDistance(chassis, from)
+	local local_ = chassis.CFrame:PointToObjectSpace(from)
+	local half = chassis.Size * 0.5
+	local clamped = Vector3.new(
+		math.clamp(local_.X, -half.X, half.X),
+		math.clamp(local_.Y, -half.Y, half.Y),
+		math.clamp(local_.Z, -half.Z, half.Z))
+	return (local_ - clamped).Magnitude
+end
+
+-- CARS YOU COULD GET INTO, offered to Interact rather than scanned when the
+-- key is pressed.
+--
+-- Registered here rather than lived in Interact, because which cars are
+-- enterable is this module's business -- the seat rule, the range cvar, and
+-- the fact that you cannot enter one while sitting in another are all facts
+-- about vehicles. Interact only knows how to point at things.
+Interact.AddSource("vehicles", function(add, ctx)
+	if not Config.sv_vehicles then return end
+	-- Already driving. Getting OUT is a key, not something you aim at, and a
+	-- prompt on the car you are sitting in is a prompt over your own bonnet.
+	if seatModel then return end
+
 	local folder = workspace:FindFirstChild("Vehicles")
-	if not folder then return nil end
-
-	local body = State.playerBody
-	if not body then return nil end
-
-	local range = num(Config.sv_vehicle_userange, 12)
-	local best, bestDist
+	if not folder then return end
 
 	for _, model in ipairs(folder:GetChildren()) do
 		local chassis = model:IsA("Model") and model.PrimaryPart
-		if chassis then
-			local local_ = chassis.CFrame:PointToObjectSpace(body.Position)
-			local half = chassis.Size * 0.5
-			local clamped = Vector3.new(
-				math.clamp(local_.X, -half.X, half.X),
-				math.clamp(local_.Y, -half.Y, half.Y),
-				math.clamp(local_.Z, -half.Z, half.Z))
-			local distance = (local_ - clamped).Magnitude
-
-			if distance <= range and (not bestDist or distance < bestDist) then
-				-- A full car is not a candidate: offering it means +use does
-				-- nothing and eats the press that would have picked up a gun.
-				-- SeatCount is published by the server when it registers the
-				-- vehicle, because how many seats a car has is now a property
-				-- of the MODEL and this scan must not build a rig for every
-				-- candidate every frame.
-				local seatCount = model:GetAttribute("SeatCount") or 0
-				local free = false
-				for i = 1, seatCount do
-					local occupant = model:GetAttribute(("Seat%d"):format(i))
-					if not occupant or occupant == 0 then free = true; break end
-				end
-				if free then best, bestDist = model, distance end
-			end
+		if chassis and hasFreeSeat(model) then
+			local class = model:GetAttribute("Class")
+			local def = class and VehicleDefs.Get(class)
+			add({
+				instance = model,
+				kind = "vehicle",
+				command = "+use",
+				verb = "Enter",
+				label = (def and def.label) or model.Name,
+				-- Its own reach and its own measurement, both matching the
+				-- server's.
+				range = num(Config.sv_vehicle_userange, 12),
+				reach = surfaceDistance(chassis, ctx.from),
+			})
 		end
 	end
+end)
 
-	return best, bestDist
-end
-
--- Returns true when the press was CONSUMED. Weapons reads that: a +use next
--- to a car is "get in", and a +use anywhere else is still "pick that up".
+-- Returns true when the press was CONSUMED. Weapons reads that: a +use aimed
+-- at a car is "get in", and a +use anywhere else is still "pick that up".
+--
+-- WHAT IS AIMED AT, not what is nearest. The old version scanned for the
+-- closest car and took the press if it found one, so standing beside a car
+-- meant you could not pick up the rifle at your feet -- the car ate every
+-- press, silently, and there was nothing on screen to say why.
 function Vehicle.TryConsumeUse()
-	if not State.useRequested then return false end
 	if not Config.sv_vehicles then return false end
 
 	local now = os.clock()
-	if now < nextRequestAt then
-		-- Still inside the debounce. While seated the press is EATEN, not
-		-- queued: leaving the flag set would fire an exit the moment the
-		-- window expired, which is a car ejecting you a third of a second
-		-- after you pressed a key you meant for something else. On foot it is
-		-- left alone, so the weapon pickup still sees it.
-		if seatModel then
-			State.useRequested = false
-			return true
-		end
-		return false
-	end
 
+	-- SEATED: leaving is its own key on the vehicle bind set, so it is not a
+	-- +use at all any more and does not compete with anything.
 	if seatModel then
+		-- A +use pressed while driving is swallowed rather than left set. On
+		-- the same key by default it is the same press as the exit below, and
+		-- leaving the flag on would fire a pickup the instant you got out.
 		State.useRequested = false
+
+		if not State.vehicleExitRequested then return false end
+		State.vehicleExitRequested = false
+
+		if now < nextRequestAt then return true end
 		nextRequestAt = now + 0.4
+
 		local exit = remote("ExitVehicle")
 		if exit then exit:FireServer() end
 		return true
 	end
 
-	local target = nearestFreeVehicle()
+	-- ON FOOT: exit presses are meaningless, and holding one from a car you
+	-- have already left would fire at the next one you got into.
+	State.vehicleExitRequested = false
+
+	if not State.useRequested then return false end
+
+	local target = Interact.TargetOfKind("vehicle")
 	if not target then return false end
+
+	if now < nextRequestAt then return false end
 
 	State.useRequested = false
 	nextRequestAt = now + 0.4
 	local enter = remote("EnterVehicle")
-	if enter then enter:FireServer(target) end
+	if enter then enter:FireServer(target.instance) end
 	return true
 end
 
@@ -1957,7 +2002,7 @@ function Vehicle.Update(deltaTime)
 			gear = sim.gear,
 			spool = sim.spool,
 			bov = sim.bov,
-			throttle = math.clamp(num(State.forwardMoveAxis, 0), 0, 1),
+			throttle = math.clamp(num(State.vehicleThrottleAxis, 0), 0, 1),
 			slipFront = sim.slipFront,
 			slipRear = sim.slipRear,
 			-- PER WHEEL, when we have it. Only the driver's own sim does:
@@ -2040,7 +2085,7 @@ function Vehicle.Sync()
 		gear = sim.gear,
 		spool = sim.spool,
 		bov = sim.bov,
-		throttle = math.clamp(num(State.forwardMoveAxis, 0), 0, 1),
+		throttle = math.clamp(num(State.vehicleThrottleAxis, 0), 0, 1),
 		slipFront = sim.slipFront,
 		slipRear = sim.slipRear,
 		vel = sim.vel,

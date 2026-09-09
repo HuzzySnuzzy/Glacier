@@ -20,6 +20,7 @@ local Visuals = require(script.Visuals)
 local Debug = require(script.Debug)
 local Sounds = require(script.Sounds)
 local Crosshair = require(script.Crosshair)
+local Interact = require(script.Interact)
 local Bullets = require(script.Bullets)
 local Spectate = require(script.Spectate)
 local SoundReceiver = require(script.SoundReceiver)
@@ -34,6 +35,7 @@ Input.Init()
 Debug.Init()
 Sounds.Init()
 Crosshair.Init()
+Interact.Init()
 Bullets.onRecoilSync     = Weapons.ApplyRecoilSync
 Visuals.onWeaponEquipped = Weapons.OnEquipped
 Bullets.Init()
@@ -291,6 +293,19 @@ RunService.RenderStepped:Connect(function(deltaTime)
 
 	Spectate.Update(deltaTime)      -- REAL time: freecam should stay responsive
 	ServerDebug.Update(deltaTime)   -- REAL time: it's a HUD
+
+	-- WHAT +USE WOULD DO, decided before anything acts on the press.
+	--
+	-- ABOVE THE BODY GUARD, like the two HUDs over it. A prompt is a thing on
+	-- screen, and everything below here stops running the moment you die --
+	-- so a prompt drawn below it would be left hanging over the corpse with
+	-- nothing able to take it down.
+	--
+	-- Above Vehicle for a second reason: Vehicle.TryConsumeUse asks Interact
+	-- whether the press was aimed at a car, and a target computed after that
+	-- call is a frame stale on the one frame that matters.
+	Interact.Update(deltaTime)
+
 	if not State.playerBody then return end
 
 	-- Simulate, THEN draw. Physics.Update publishes State.tickAlpha from what

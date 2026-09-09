@@ -36,6 +36,7 @@ local Visuals = require(script.Parent.Visuals)
 local Sounds  = require(script.Parent.Sounds)
 local Bullets = require(script.Parent.Bullets)
 local ViewSway = require(script.Parent.ViewSway)
+local Interact = require(script.Parent.Interact)
 local Inventory = require(ReplicatedStorage:WaitForChild("Inventory"))
 local ItemRegistry = require(ReplicatedStorage:WaitForChild("ItemRegistry"))
 
@@ -394,12 +395,23 @@ local function serviceInventoryRequests()
 	end
 
 	if State.useRequested then
-		-- Vehicle.Update runs earlier in the frame and clears this when there
-		-- was a car in range, so a press that survives to here is genuinely
-		-- "pick that up".
+		-- Vehicle.Update runs earlier in the frame and clears this when the
+		-- press was aimed at a car, so a press that survives to here is
+		-- genuinely "pick that up".
 		State.useRequested = false
+
+		-- THE THING THE PROMPT NAMED, sent with the request.
+		--
+		-- The server used to choose for itself, nearest-first, which is a
+		-- different answer from the one on screen the moment two guns are
+		-- lying near each other: the label said one and the hands took the
+		-- other. It still range-checks whatever it is handed and still falls
+		-- back to nearest when it is handed nothing, so a client that has not
+		-- aimed at anything -- or has prompts turned off -- behaves as before.
+		local target = Interact.TargetOfKind("pickup")
+
 		local pickup = remote("PickupWeapon")
-		if pickup then pickup:FireServer() end
+		if pickup then pickup:FireServer(target and target.instance or nil) end
 	end
 end
 

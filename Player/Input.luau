@@ -178,6 +178,30 @@ local COMMANDS = {
 	-- Same reasoning as toggleconsole: the menu makes the game modal, so
 	-- without passthrough the key that opened it could not close it.
 	["togglemenu"] = { order = 21, label = "Menu", button = false, modalPassthrough = true },
+
+	-- DRIVING, ON ITS OWN SET OF KEYS.
+	--
+	-- `set = "vehicle"` is the whole mechanism: a key in the vehicle set only
+	-- means anything while you are in a car, and while you are in one it BEATS
+	-- whatever that key does on foot. So W is forward when you are walking and
+	-- the throttle when you are driving, both of them rebindable, neither
+	-- aware of the other.
+	--
+	-- It has to work this way round because a key holds exactly one command.
+	-- Driving used to borrow the walking axes outright, which meant "vehicle
+	-- controls" were not a thing you could bind at all: moving strafe-left to
+	-- Q moved the car's steering with it, and there was no way to say that a
+	-- car should brake on a key that does something else on foot.
+	--
+	-- Only the keys the car actually wants are in the set. Everything else --
+	-- the console, the menu, third person -- falls through to the on-foot
+	-- binds, so driving does not cost you the rest of the keyboard.
+	["+vthrottle"] = { order = 22, label = "Accelerate", button = true, set = "vehicle" },
+	["+vbrake"]    = { order = 23, label = "Brake / Reverse", button = true, set = "vehicle" },
+	["+vleft"]     = { order = 24, label = "Steer Left",  button = true, set = "vehicle" },
+	["+vright"]    = { order = 25, label = "Steer Right", button = true, set = "vehicle" },
+	["+handbrake"] = { order = 26, label = "Handbrake",   button = true, set = "vehicle" },
+	["vexit"]      = { order = 27, label = "Exit Vehicle", button = false, set = "vehicle" },
 }
 
 -- SLOT COMMANDS, generated from Inventory.SLOTS so adding a slot there gets
@@ -210,6 +234,13 @@ local DEFAULT_BINDS = {
 	{ "v", "thirdperson" }, { "f", "+lookatweapon" },
 	{ "e", "+use" }, { "g", "drop" },
 	{ "f1", "togglemenu" },
+
+	-- THE SAME KEYS AS WALKING, on purpose. Nothing about how a car drives
+	-- changes on the day this shipped; what changes is that these are now
+	-- separate rows in the settings menu, so moving one moves only that one.
+	{ "w", "+vthrottle" }, { "s", "+vbrake" },
+	{ "a", "+vleft" }, { "d", "+vright" },
+	{ "space", "+handbrake" }, { "e", "vexit" },
 }
 
 -- The number row, in slot order, inserted where the hand-written 1/2/3 used
@@ -237,7 +268,43 @@ local GAMEPAD_DEFAULTS = {
 local context
 local actions = {}         -- [command] = InputAction
 local actionBindings = {}  -- [command] = { InputBinding, ... }
-local binds = {}           -- [keyName] = commandString   (authoritative)
+-- TWO BIND TABLES, one per context, and which one a command lives in is a
+-- property of the COMMAND rather than something a caller passes around. A
+-- key holds one command, so "the same key means something else while
+-- driving" cannot be expressed in one table -- and that is the whole of why
+-- vehicle controls were not bindable before.
+--
+-- The vehicle set OVERRIDES the player set while you are in a car, and falls
+-- through to it for every key it does not claim. Driving therefore costs you
+-- the four movement keys and nothing else: the console, the menu and third
+-- person all still work, without the vehicle set having to list them.
+local binds = {}           -- [keyName] = commandString   (on foot; authoritative)
+local vehicleBinds = {}    -- [keyName] = commandString   (while driving; wins)
+
+local BIND_SETS = { player = binds, vehicle = vehicleBinds }
+local activeSet = "player"
+
+-- Which table a command belongs in. Derived, so nothing that binds, unbinds,
+-- resets or lists a command has to be told -- and so a command cannot end up
+-- in the wrong table by being touched through a path that forgot to say.
+local function setOf(command)
+	local def = COMMANDS[command]
+	return (def and def.set) or "player"
+end
+
+local function tableFor(command)
+	return BIND_SETS[setOf(command)] or binds
+end
+
+-- WHAT THIS KEY DOES RIGHT NOW. The one lookup every dispatch path uses, so
+-- there is exactly one place that knows about the fallthrough.
+local function commandFor(keyName)
+	if activeSet ~= "player" then
+		local override = BIND_SETS[activeSet]
+		if override and override[keyName] then return override[keyName] end
+	end
+	return binds[keyName]
+end
 
 local buttonSources = {}   -- [command] = { [source] = true }
 local buttonDown = {}      -- [command] = bool
@@ -330,6 +397,10 @@ local function applyPressInner(name)
 		-- Consumed by Weapons, which owns the remote. Input stays free of
 		-- anything that talks to the server.
 		State.useRequested = true
+	elseif name == "vexit" then
+		-- Its own request rather than a second meaning for +use, because it is
+		-- a different key on a different keyboard the moment anybody moves it.
+		State.vehicleExitRequested = true
 	elseif name == "drop" then
 		State.dropRequested = true
 
@@ -479,7 +550,19 @@ local function syncActionBindings()
 		clearActionBindings(cmd)
 	end
 
-	for keyName, cmd in pairs(binds) do
+	-- The EFFECTIVE map for the context we are in: the vehicle set on top of
+	-- the player set while driving, the player set alone otherwise. Built here
+	-- rather than at every dispatch, because these objects ARE the dispatch --
+	-- an InputBinding that exists is a key that fires.
+	local effective = {}
+	for keyName, cmd in pairs(binds) do effective[keyName] = cmd end
+	if activeSet ~= "player" then
+		for keyName, cmd in pairs(BIND_SETS[activeSet] or {}) do
+			effective[keyName] = cmd
+		end
+	end
+
+	for keyName, cmd in pairs(effective) do
 		local action = actions[cmd]
 		local kc = NAME_TO_KEY[keyName]
 		if action and kc then
@@ -511,8 +594,12 @@ function Input.Bind(key, command)
 	-- its quotes attached. Strip them rather than binding to a literal quote.
 	command = command:match('^"(.*)"$') or command:match("^'(.*)'$") or command
 
-	local previous = binds[keyName]
-	binds[keyName] = command
+	-- INTO THE SET THE COMMAND BELONGS TO. Binding W to +vthrottle writes the
+	-- vehicle table and leaves walking alone, which is the entire point of
+	-- there being two.
+	local into = tableFor(command)
+	local previous = into[keyName]
+	into[keyName] = command
 
 	-- A key that moved off a button must release it, or the button stays
 	-- latched forever with no key able to clear it.
@@ -529,14 +616,18 @@ function Input.Bind(key, command)
 	return true
 end
 
-function Input.Unbind(key)
+-- `set` names which table to clear -- "player" (the default) or "vehicle".
+-- A key can be bound in both, and unbinding W would otherwise silently take
+-- the throttle with it, or not, depending on which table was written first.
+function Input.Unbind(key, set)
 	local keyName = normalizeKey(key)
 	if not keyName then
 		return false, ("unknown key '%s'"):format(tostring(key))
 	end
 
-	local previous = binds[keyName]
-	binds[keyName] = nil
+	local from = BIND_SETS[set or "player"] or binds
+	local previous = from[keyName]
+	from[keyName] = nil
 
 	if previous then
 		local def = COMMANDS[previous]
@@ -552,9 +643,11 @@ function Input.Unbind(key)
 end
 
 function Input.UnbindAll()
-	for keyName in pairs(binds) do
-		binds[keyName] = nil
-		Input.BindingChanged:Fire(keyName, nil)
+	for _, set in pairs(BIND_SETS) do
+		for keyName in pairs(set) do
+			set[keyName] = nil
+			Input.BindingChanged:Fire(keyName, nil)
+		end
 	end
 	for cmd, set in pairs(buttonSources) do
 		table.clear(set)
@@ -579,16 +672,17 @@ function Input.BindDefaults()
 	end
 end
 
-function Input.GetBind(key)
+function Input.GetBind(key, set)
 	local keyName = normalizeKey(key)
-	return keyName and binds[keyName] or nil
+	if not keyName then return nil end
+	return (BIND_SETS[set or "player"] or binds)[keyName]
 end
 
 -- Every key bound to a command. A command can have several -- that is the
 -- point of a bind table -- so this returns a list, not a single key.
 function Input.GetKeysFor(command)
 	local out = {}
-	for keyName, cmd in pairs(binds) do
+	for keyName, cmd in pairs(tableFor(command)) do
 		if cmd == command then table.insert(out, keyName) end
 	end
 	table.sort(out)
@@ -605,6 +699,9 @@ function Input.GetBindingList()
 			label = def.label,
 			order = def.order,
 			button = def.button or false,
+			-- Carried so a menu can say WHICH keyboard this row is on. Without
+			-- it the vehicle rows read as duplicates of the movement ones.
+			set = setOf(cmd),
 			keys = Input.GetKeysFor(cmd),
 		})
 	end
@@ -638,8 +735,9 @@ end
 -- its remaining keys, or none, which the menu shows honestly rather than
 -- quietly restoring in turn.
 function Input.ResetBind(command)
+	local set = setOf(command)
 	for _, keyName in ipairs(Input.GetKeysFor(command)) do
-		Input.Unbind(keyName)
+		Input.Unbind(keyName, set)
 	end
 	for _, keyName in ipairs(Input.DefaultKeysFor(command)) do
 		Input.Bind(keyName, command)
@@ -649,32 +747,75 @@ end
 
 -- Clear every key on one command.
 function Input.ClearBind(command)
+	local set = setOf(command)
 	for _, keyName in ipairs(Input.GetKeysFor(command)) do
-		Input.Unbind(keyName)
+		Input.Unbind(keyName, set)
 	end
 end
 
+-- Both tables, under their set names.
 function Input.SaveBindings()
-	return table.clone(binds)
+	return { player = table.clone(binds), vehicle = table.clone(vehicleBinds) }
 end
 
+-- READS THE OLD SHAPE TOO. A saved config from before the vehicle set existed
+-- is a flat [key] = command table, and there are players holding one: loading
+-- it as though the keys were set names would throw every binding they have
+-- away and hand them the defaults, which is a worse first impression than the
+-- feature is worth.
+--
+-- Told apart by their contents rather than by a version number, because the
+-- old files do not have one: a table whose values are tables is the new
+-- shape, and a table whose values are strings is the old one.
 function Input.LoadBindings(data)
 	if type(data) ~= "table" then return end
 	Input.UnbindAll()
-	for keyName, cmd in pairs(data) do
-		if type(cmd) == "string" then Input.Bind(keyName, cmd) end
+
+	local nested = false
+	for _, value in pairs(data) do
+		if type(value) == "table" then nested = true break end
+	end
+
+	if not nested then
+		-- The old flat table. Every command in it predates the vehicle set,
+		-- and Bind routes by command anyway, so this needs no translation.
+		for keyName, cmd in pairs(data) do
+			if type(cmd) == "string" then Input.Bind(keyName, cmd) end
+		end
+		-- The vehicle keys have never been set on this profile, so they get
+		-- what they ship with rather than nothing at all.
+		for _, pair in ipairs(DEFAULT_BINDS) do
+			if setOf(pair[2]) == "vehicle" then Input.Bind(pair[1], pair[2]) end
+		end
+		return
+	end
+
+	for _, name in ipairs({ "player", "vehicle" }) do
+		local set = data[name]
+		if type(set) == "table" then
+			for keyName, cmd in pairs(set) do
+				if type(cmd) == "string" then Input.Bind(keyName, cmd) end
+			end
+		end
 	end
 end
 
 -- Bind syntax, so the output pastes straight back into the console or a cfg.
+--
+-- Both sets, in one list and with no marker between them: `bind` routes by
+-- the command, so `bind w "+vthrottle"` lands in the vehicle table wherever
+-- it is typed. A file that had to say which keyboard each line was for would
+-- be a second thing to get wrong.
 function Input.WriteBinds()
-	local keys = {}
-	for keyName in pairs(binds) do table.insert(keys, keyName) end
-	table.sort(keys)
-
 	local lines = {}
-	for _, keyName in ipairs(keys) do
-		table.insert(lines, ('bind %s "%s"'):format(keyName, binds[keyName]))
+	for _, name in ipairs({ "player", "vehicle" }) do
+		local set = BIND_SETS[name]
+		local keys = {}
+		for keyName in pairs(set) do table.insert(keys, keyName) end
+		table.sort(keys)
+		for _, keyName in ipairs(keys) do
+			table.insert(lines, ('bind %s "%s"'):format(keyName, set[keyName]))
+		end
 	end
 	return lines
 end
@@ -730,7 +871,7 @@ local function bindScroll()
 		if input.UserInputType ~= Enum.UserInputType.MouseWheel then return end
 
 		local keyName = input.Position.Z > 0 and "mwheelup" or "mwheeldown"
-		local cmd = binds[keyName]
+		local cmd = commandFor(keyName)
 		if not cmd then return end
 
 		local def = COMMANDS[cmd]
@@ -786,7 +927,7 @@ local function bindRawDispatch()
 		local kc = keyCodeFor(input)
 		if not kc then return end
 
-		local cmd = binds[keyNameFor(kc)]
+		local cmd = commandFor(keyNameFor(kc))
 		if not cmd or COMMANDS[cmd] then return end
 		dispatchDown(cmd, "action")
 	end))
@@ -795,7 +936,7 @@ local function bindRawDispatch()
 		local kc = keyCodeFor(input)
 		if not kc then return end
 
-		local cmd = binds[keyNameFor(kc)]
+		local cmd = commandFor(keyNameFor(kc))
 		if not cmd or COMMANDS[cmd] then return end
 		dispatchUp(cmd, "action")
 	end))
@@ -819,7 +960,7 @@ local function bindModalPassthrough()
 		local kc = keyCodeFor(input)
 		if not kc then return end
 
-		local cmd = binds[keyNameFor(kc)]
+		local cmd = commandFor(keyNameFor(kc))
 		local def = cmd and COMMANDS[cmd]
 		if def and def.modalPassthrough then
 			-- Press only. A held command here would need release tracking the
@@ -1002,6 +1143,48 @@ local function releaseHardwareButtons()
 	table.clear(scrollPulse)
 end
 
+--=====================================================================
+-- CONTEXT
+--=====================================================================
+
+-- WHICH KEYBOARD IS LIVE. "player" on foot, "vehicle" while driving -- see
+-- the note on the two bind tables above.
+--
+-- Two things have to happen on a switch and both of them are the kind that
+-- get forgotten:
+--
+--   RELEASE WHAT WAS HELD. Getting into a car with W down would otherwise
+--   leave +forward latched with no key able to clear it, and the player walks
+--   for the rest of the round after they get out.
+--
+--   RE-PRESS WHAT IS STILL HELD, under the new command. Running at a car
+--   holding W and pressing E should drive away, not sit there until you let
+--   go of W and take hold of it again. Roblox fires Pressed when a binding
+--   is CREATED for a key that is already down on no version of this, so the
+--   keys actually down are read back and dispatched by hand.
+function Input.SetContext(name)
+	name = BIND_SETS[name] and name or "player"
+	if name == activeSet then return end
+
+	releaseHardwareButtons()
+	activeSet = name
+	syncActionBindings()
+
+	-- What the hands are actually doing, right now.
+	for _, input in ipairs(UserInputService:GetKeysPressed()) do
+		local cmd = commandFor(keyNameFor(input.KeyCode))
+		local def = cmd and COMMANDS[cmd]
+		-- BUTTONS ONLY. A one-shot -- exit the car, toggle the menu -- is an
+		-- edge, and re-firing it here would exit the car on the very frame
+		-- you got into it.
+		if def and def.button then buttonPress(cmd, "action") end
+	end
+end
+
+function Input.Context()
+	return activeSet
+end
+
 -- Recomputes modal state and applies it. Safe and cheap to call every frame;
 -- everything below writes only on an actual change.
 function Input.Refresh()
@@ -1097,6 +1280,11 @@ function Input.UpdateWishDir()
 		-- last held direction.
 		State.forwardMoveAxis = 0
 		State.sideMoveAxis = 0
+		-- And the car, for the same reason: a freezetime with the throttle
+		-- held would otherwise pull away the instant the freeze lifted.
+		State.vehicleThrottleAxis = 0
+		State.vehicleSteerAxis = 0
+		State.vehicleHandbrake = false
 		return
 	end
 
@@ -1115,6 +1303,26 @@ function Input.UpdateWishDir()
 	-- would mean the camera decides which way the front wheels point, and
 	-- looking out of the side window would turn the car.
 	State.sideMoveAxis = side
+
+	-- THE CAR'S OWN AXES, off the car's own keys.
+	--
+	-- Separate from the walking pair rather than derived from them, which is
+	-- the whole of the vehicle bind set being real: with these derived, moving
+	-- strafe-left to Q would move the steering with it and there would be no
+	-- way to say a car brakes on a key that does something else on foot.
+	--
+	-- Published unconditionally, not only while seated. Input has no idea
+	-- whether you are in a car -- Vehicle does -- and a pair of axes that only
+	-- existed some of the time would be a nil for whoever read them first.
+	local drive, steer = 0, 0
+	if isDown("+vthrottle") then drive += 1 end
+	if isDown("+vbrake")    then drive -= 1 end
+	if isDown("+vright")    then steer += 1 end
+	if isDown("+vleft")     then steer -= 1 end
+
+	State.vehicleThrottleAxis = drive
+	State.vehicleSteerAxis = steer
+	State.vehicleHandbrake = isDown("+handbrake")
 
 	local inputVector = Vector3.new(side, 0, -fwd)
 	if inputVector.Magnitude > 0 then
@@ -1262,25 +1470,42 @@ Config.Command("bind", {
 		end
 
 		if command == nil then
-			local cur = binds[keyName]
-			ctx.reply(cur and ('bind %s "%s"'):format(keyName, cur)
-				or ("%s is not bound"):format(keyName))
+			-- BOTH SETS. A key means one thing on foot and can mean another
+			-- while driving, and reporting only the first would make the
+			-- second look unbound to anyone trying to find out why W does
+			-- something unexpected in a car.
+			local said = false
+			for _, name in ipairs({ "player", "vehicle" }) do
+				local cur = BIND_SETS[name][keyName]
+				if cur then
+					said = true
+					ctx.reply(name == "player"
+						and ('bind %s "%s"'):format(keyName, cur)
+						or ('bind %s "%s"   (while driving)'):format(keyName, cur))
+				end
+			end
+			if not said then ctx.reply(("%s is not bound"):format(keyName)) end
 			return
 		end
 
 		local ok, reason = Input.Bind(keyName, command)
 		if not ok then return false, reason end
-		ctx.reply(('bind %s "%s"'):format(keyName, binds[keyName]))
+		ctx.reply(('bind %s "%s"'):format(keyName, command))
 	end,
 })
 
 Config.Command("unbind", {
-	args = { "string" },
-	help = "clear a key's binding",
-	run = function(ctx, key)
-		local ok, reason = Input.Unbind(key)
+	args = { "string", "string?" },
+	help = "clear a key's binding; add 'vehicle' to clear the driving one",
+	run = function(ctx, key, set)
+		set = set and string.lower(set) or "player"
+		if not BIND_SETS[set] then
+			return false, ("unknown bind set '%s' -- player or vehicle"):format(set)
+		end
+		local ok, reason = Input.Unbind(key, set)
 		if not ok then return false, reason end
-		ctx.reply(("unbound %s"):format(normalizeKey(key)))
+		ctx.reply(("unbound %s%s"):format(normalizeKey(key),
+			set == "vehicle" and " (while driving)" or ""))
 	end,
 })
 
