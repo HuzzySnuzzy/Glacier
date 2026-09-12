@@ -648,6 +648,32 @@ Define("mp_buy_anywhere", false, FCVAR.REPLICATED)
 Define("mp_refundtime", 8, FCVAR.REPLICATED)
 
 Define("mp_buyfeedback", true, FCVAR.REPLICATED)  -- say why a purchase was refused
+
+--=====================================================================
+-- GRENADES
+--=====================================================================
+-- REPLICATED throughout: the client predicts the arc so you can aim with it
+-- and the server decides where the thing actually landed, so both ends have
+-- to be throwing with the same numbers or the line you practised is not the
+-- line you get.
+Define("sv_nades", true, FCVAR.REPLICATED)             -- master switch
+Define("sv_nade_inherit", 0.6, FCVAR.REPLICATED)       -- how much of your own speed carries
+Define("sv_nade_gravity", 0, FCVAR.REPLICATED)         -- 0 = follow sv_gravity
+Define("sv_nade_hz", 60, FCVAR.REPLICATED)             -- simulation ticks per second
+Define("sv_nade_maxlife", 20, FCVAR.REPLICATED)        -- seconds before one is culled whatever it is doing
+Define("sv_nade_maxlive", 24, FCVAR.REPLICATED)        -- in flight at once, server-wide
+
+-- Friendly fire is the server's switch; a grenade that is gentler than
+-- another under it says so on its own def.
+Define("mp_friendlyfire", false, FCVAR.REPLICATED)
+
+-- The arc you aim with. Off is CS 1.6, on is every modern shooter, and it
+-- is a preference rather than an advantage: the server throws the same
+-- either way.
+Define("cl_nade_arc", true)
+Define("cl_nade_arcpoints", 28)       -- how far ahead it is drawn
+Define("cl_flash_effect", true)       -- the white; off is for people who cannot take it
+
   -- rounds only end on the clock
 Define("mp_death_drop_time", 0, FCVAR.REPLICATED)              -- corpse lingers before cleanup
 

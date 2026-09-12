@@ -21,6 +21,7 @@ local Debug = require(script.Debug)
 local Sounds = require(script.Sounds)
 local Crosshair = require(script.Crosshair)
 local Interact = require(script.Interact)
+local Grenades = require(script.Grenades)
 local Bullets = require(script.Bullets)
 local Spectate = require(script.Spectate)
 local SoundReceiver = require(script.SoundReceiver)
@@ -36,6 +37,7 @@ Debug.Init()
 Sounds.Init()
 Crosshair.Init()
 Interact.Init()
+Grenades.Init()
 Bullets.onRecoilSync     = Weapons.ApplyRecoilSync
 Visuals.onWeaponEquipped = Weapons.OnEquipped
 Bullets.Init()
@@ -305,6 +307,11 @@ RunService.RenderStepped:Connect(function(deltaTime)
 	-- whether the press was aimed at a car, and a target computed after that
 	-- call is a frame stale on the one frame that matters.
 	Interact.Update(deltaTime)
+
+	-- ABOVE THE BODY GUARD with the rest of the screen, and for the same
+	-- reason: a flash must not be left hanging on the screen because the
+	-- player it blinded then died to the grenade that did it.
+	Grenades.Update()
 
 	if not State.playerBody then return end
 

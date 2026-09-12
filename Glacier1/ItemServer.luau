@@ -135,7 +135,7 @@ Players.PlayerRemoving:Connect(function(plr) cooldowns[plr] = nil end)
 -- a body no test can reach either.
 --
 -- Returns ok, reasonOrVerdict.
-local function useItem(plr, slot, now)
+local function useItem(plr, slot, now, hint)
 	if not Glacier.IsAlive(plr) then return false, "you are not alive" end
 
 	slot = Inventory.SlotIndex(slot) or Glacier.ActiveSlot(plr)
@@ -180,6 +180,15 @@ local function useItem(plr, slot, now)
 		slot = slot,
 		stats = stats,
 		now = now,
+
+		-- WHAT THE CLIENT ASKED FOR, and nothing more than that. It exists
+		-- for the four grenade throws -- the same pin and four lineups -- and
+		-- an item with no opinion about it never looks.
+		--
+		-- Validated here rather than in every item: it comes off the wire, so
+		-- it is a short string or it is nothing. An item that trusts it is
+		-- trusting a name, and a name is all it can be.
+		hint = hint,
 
 		-- The item's own animation, by whatever name it gave it. Played on
 		-- the user's viewmodel AND on their puppet for everybody else, which
@@ -244,8 +253,11 @@ local function useItem(plr, slot, now)
 	return true, "keep"
 end
 
-UseItem.OnServerEvent:Connect(function(plr, slot)
-	local ok, why = useItem(plr, slot, os.clock())
+UseItem.OnServerEvent:Connect(function(plr, slot, hint)
+	-- Off the wire, so it is a short string or it is nothing at all.
+	if type(hint) ~= "string" or #hint > 16 then hint = nil end
+
+	local ok, why = useItem(plr, slot, os.clock(), hint)
 	-- Silent on refusal. This fires from a held trigger, so a message per
 	-- rejected press would be a wall of text on an empty slot -- unlike the
 	-- vehicle use key, which is a single deliberate press.

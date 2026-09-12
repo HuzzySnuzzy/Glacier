@@ -358,8 +358,20 @@ local function beginUse(s)
 		Sounds.Push("weapon", "Use")
 	end
 
+	-- A HINT, which the item may use or ignore.
+	--
+	-- It exists for the four grenade throws: the same pin and four lineups is
+	-- most of why grenades are a skill, and without this a lob would need its
+	-- own slot, its own key and its own path through the item system. Alt
+	-- fire lobs, exactly as CS:GO does it.
+	--
+	-- A HINT rather than an instruction: the server validates it like
+	-- anything else off the wire, and every item that has no opinion about it
+	-- never sees it.
 	local use = remote("UseItem")
-	if use then use:FireServer(State.activeSlot) end
+	if use then
+		use:FireServer(State.activeSlot, State.trigger2Down and "lob" or nil)
+	end
 end
 
 --=====================================================================
