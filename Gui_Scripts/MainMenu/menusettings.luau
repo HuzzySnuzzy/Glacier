@@ -905,6 +905,19 @@ section("Debug", "Movement")
 cvarToggle("Debug", "mv_debugStops", "Warn on lost speed",
 	"Prints to the console when a collision eats most of your velocity.")
 
+section("Debug", "Collision")
+
+cvarToggle("Debug", "mv_collisionFidelity", "Collide with real shapes",
+	"Off, a part that is not a box is collided with as the box that bounds " ..
+	"it. A wedge's box is twice the wedge, so the half you surf on counts " ..
+	"as solid -- which is what stopped surf working. On is the real shape, " ..
+	"a mesh's collision fidelity included.")
+
+cvarToggle("Debug", "mv_respectCanCollide", "Honour CanCollide",
+	"Off, a decorative non-colliding part is still a wall to the movement " ..
+	"sweeps. Left here because a map built against the old behaviour can " ..
+	"rely on surfaces that are not meant to be solid.")
+
 refreshDevTabs()
 Config.OnChange("cl_developer", refreshDevTabs)
 

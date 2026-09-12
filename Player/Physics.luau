@@ -121,6 +121,118 @@ local function IntersectOBB(centreA, halfA, part)
 end
 
 --=====================================================================
+-- COLLISION FIDELITY
+--=====================================================================
+-- IntersectOBB above treats every part as the box it is not.
+--
+-- That is exact for a Block and a LIE for everything else, and it is not a
+-- rounding error. A WedgePart's box is twice the solid: the sloped half a
+-- player surfs on is empty space the box claims as filled. So every tick the
+-- depenetration pass found the player inside that box and ejected them out of
+-- one of its faces -- which is why nobody has been able to surf. A MeshPart is
+-- worse again: the box is the mesh's bounding box, so an arch, a pipe or a
+-- rock is a crate as far as this file is concerned, and you collide with the
+-- air around it and walk through the parts of it that matter.
+--
+-- SO ASK THE ENGINE. Blockcast honours a part's real collision geometry --
+-- a MeshPart's CollisionFidelity included -- and the hull is already swept
+-- with it everywhere else. This is that same query pointed at one part.
+--
+-- The box stays as the BROAD phase. Real geometry is always inside its own
+-- bounding box, so a box that does not overlap settles it and costs nothing;
+-- only a part the box says we are inside is worth six casts, and in ordinary
+-- play that is none of them.
+
+-- Whether the box IS the part. Anything else -- a wedge, a mesh, a union, a
+-- sphere, terrain -- is only bounded by it.
+local function IsBoxShaped(part)
+	if not part:IsA("Part") then return false end
+	local ok, shape = pcall(function() return part.Shape end)
+	return ok and shape == Enum.PartType.Block
+end
+
+-- The six faces of the hull. Not a full MTV search: the minimum over these is
+-- what the OBB path returns anyway -- its candidate axes for an axis-aligned
+-- hull against an axis-aligned part are exactly these -- and a diagonal exit
+-- from a ramp is not a thing anybody wants.
+local PROBE_DIRS = {
+	Vector3.yAxis, -Vector3.yAxis,
+	Vector3.xAxis, -Vector3.xAxis,
+	Vector3.zAxis, -Vector3.zAxis,
+}
+
+-- Reused. A RaycastParams per probe per part per tick is an allocation in the
+-- hottest path in the file.
+local probeParams = RaycastParams.new()
+probeParams.FilterType = Enum.RaycastFilterType.Include
+
+-- How far the hull has to come to leave this part, against its REAL shape.
+-- Returns an axis and a depth, or nil when the box was lying and we are
+-- actually clear of it.
+--
+-- Each probe starts outside the part and sweeps the hull back to where it
+-- actually is. A sweep that reaches the end untouched means the hull is not
+-- in the part's way from that side; one that stops short stopped at the
+-- surface, and the distance left over is exactly how far in we are.
+local function ExactPush(pos, hullSize, part)
+	probeParams.FilterDescendantsInstances = { part }
+
+	local cf = part.CFrame
+	local bx, by, bz = cf.RightVector, cf.UpVector, cf.LookVector
+	local halfB = part.Size * 0.5
+	local halfA = hullSize * 0.5
+	local delta = part.Position - pos
+
+	local bestAxis, bestDepth = nil, math.huge
+	for _, dir in ipairs(PROBE_DIRS) do
+		-- JUST FAR ENOUGH OUT to start clear, computed per direction rather
+		-- than from the part's diagonal. A surf ramp is a two-hundred-stud
+		-- wedge, and a sweep is paid for by its length: measuring the
+		-- bounding box along THIS axis rather than corner to corner roughly
+		-- halves it, and on a long thin part it is far better than that.
+		local rB = math.abs(bx:Dot(dir)) * halfB.X
+			+ math.abs(by:Dot(dir)) * halfB.Y
+			+ math.abs(bz:Dot(dir)) * halfB.Z
+		local rA = math.abs(dir.X) * halfA.X
+			+ math.abs(dir.Y) * halfA.Y
+			+ math.abs(dir.Z) * halfA.Z
+
+		local reach = rA + rB + delta:Dot(dir) + SKIN
+
+		if reach > SKIN then
+			local origin = pos + dir * reach
+			local hit = workspace:Blockcast(CFrame.new(origin), hullSize,
+				-dir * reach, probeParams)
+			if hit then
+				local depth = reach - hit.Distance
+				if depth > DEPEN_EPS and depth < bestDepth then
+					bestAxis, bestDepth = dir, depth
+				end
+			end
+		end
+	end
+
+	if not bestAxis then return nil end
+	return bestAxis, bestDepth
+end
+
+-- The overlap, by whichever measure this part deserves. One place, because
+-- the depenetration pass and the duck check both ask and answering them
+-- differently is two collision systems again.
+local function Overlap(pos, hullSize, part)
+	local axis, depth = IntersectOBB(pos, hullSize * 0.5, part)
+	if not (axis and depth > DEPEN_EPS) then return nil end
+
+	-- The box says we are inside it. For anything that is not a box that is a
+	-- bound rather than an answer.
+	if Config.mv_collisionFidelity == false or IsBoxShaped(part) then
+		return axis, depth
+	end
+
+	return ExactPush(pos, hullSize, part)
+end
+
+--=====================================================================
 -- CASTING
 --=====================================================================
 
@@ -216,10 +328,14 @@ end
 
 local function IsOccupied(pos, size, op, tolerance)
 	tolerance = tolerance or 0.01
-	local half = size * 0.5
 	for _, part in ipairs(GatherCandidates(pos, size, op)) do
 		if part.CanCollide then
-			local _, depth = IntersectOBB(pos, half, part)
+			-- The same measure the depenetration pass uses. Answering these
+			-- two differently is how a player ends up unable to stand up
+			-- inside a space nothing is actually in -- the box over a wedge
+			-- says occupied, the geometry says empty, and only one of them
+			-- gets to be right.
+			local _, depth = Overlap(pos, size, part)
 			if depth and depth > tolerance then return true end
 		end
 	end
@@ -280,7 +396,6 @@ end
 -- along the minimum translation vector means a ramp ejects us perpendicular to
 -- its face rather than sliding us down it.
 local function Depenetrate(pos, size, op)
-	local half = size * 0.5
 	local candidates = GatherCandidates(pos, size, op)
 	if #candidates == 0 then return pos end
 
@@ -289,7 +404,7 @@ local function Depenetrate(pos, size, op)
 		local moved = false
 		for _, part in ipairs(candidates) do
 			if part.CanCollide then
-				local axis, depth = IntersectOBB(pos, half, part)
+				local axis, depth = Overlap(pos, size, part)
 				if axis and depth > DEPEN_EPS then
 					pos = pos + axis * (depth + DEPEN_EPS)
 					moved = true

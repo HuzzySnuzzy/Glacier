@@ -216,6 +216,21 @@ Define("mv_sgsGraceTime", 0.15, FCVAR.REPLICATED + FCVAR.CHEAT)        -- how lo
 -- that never filters on CanCollide, because a ladder is a thing you walk into.
 Define("mv_respectCanCollide", true, FCVAR.REPLICATED + FCVAR.CHEAT)
 
+-- COLLISION FIDELITY. Whether a part that is not a box is collided with as
+-- the shape it actually is, or as the box that bounds it.
+--
+-- Off is the old behaviour and it is not subtle: a WedgePart's bounding box
+-- is twice the solid, so the sloped half a player surfs on is empty space the
+-- depenetration pass treats as filled -- it ejects you out of a face of the
+-- box every tick, which is why surf stopped working. A MeshPart is bounded by
+-- its bounding box, so an arch or a pipe is a crate.
+--
+-- On costs six swept casts per part the bounding box says you are inside AND
+-- that is not a box -- in ordinary play, none of them. Left as a cvar because
+-- it changes what is solid, and a map built against the boxes is a map that
+-- will feel different.
+Define("mv_collisionFidelity", true, FCVAR.REPLICATED)
+
 -- 0 = raw input (authentic), 1 = the optimal strafe angle computed for you.
 -- Server-owned: this is an aim assist for movement.
 Define("mv_strafeAssist", 0, FCVAR.REPLICATED + FCVAR.CHEAT)
