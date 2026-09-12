@@ -8,6 +8,14 @@ return {
 	-- a slot this forbids, so a pistol can never end up in the rifle slot.
 	slot = "melee",
 
+	-- WHAT IT COSTS in the buy menu, beside everything else about it: a
+	-- second table somewhere keyed by class name is a second thing to
+	-- keep in step. See ReplicatedStorage.Economy.
+	-- Free, and a kill with it is worth five rifle kills -- a
+	-- knife round should change somebody's afternoon.
+	price = 0,
+	killReward = 1500,
+
 	-- Movement speed while this is the ACTIVE weapon, in studs/second.
 	-- CS:GO's MaxPlayerSpeed of 250 units -- the fastest thing you can hold, which is the point of switching to it.
 	-- Applied as a ratio of sv_maxspeed, so crouch and walk-key speeds

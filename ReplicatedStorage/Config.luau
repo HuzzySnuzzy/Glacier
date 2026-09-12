@@ -616,7 +616,39 @@ Define("mp_respawn", false, FCVAR.REPLICATED)      -- true = deathmatch respawni
 Define("mp_respawnwavetime", 3, FCVAR.REPLICATED)     -- only used when mp_respawn is true
 Define("mp_round_restart_delay", 5, FCVAR.REPLICATED)
 Define("mp_minPlayers", 2, FCVAR.REPLICATED)                    -- 1 = solo testing
-Define("mp_ignoreRoundWinConditions", false, FCVAR.REPLICATED)  -- rounds only end on the clock
+Define("mp_ignoreRoundWinConditions", false, FCVAR.REPLICATED)
+
+--=====================================================================
+-- ECONOMY  (mp_* , CS convention)
+--=====================================================================
+-- The numbers are CS:GO's. The loss ladder is the one that matters: a team
+-- that has just lost gets mp_lossbase, and each CONSECUTIVE loss adds
+-- mp_lossstep up to mp_lossmax -- which is what stops a team that lost the
+-- pistol round being dead for the next twenty minutes, and why breaking an
+-- opponent's streak is worth as much as the round.
+Define("mp_startmoney", 800, FCVAR.REPLICATED)
+Define("mp_maxmoney", 16000, FCVAR.REPLICATED)
+Define("mp_winmoney", 3250, FCVAR.REPLICATED)
+Define("mp_lossbase", 1400, FCVAR.REPLICATED)
+Define("mp_lossstep", 500, FCVAR.REPLICATED)
+Define("mp_lossmax", 3400, FCVAR.REPLICATED)
+
+-- Seconds after a round starts that you may still buy. 0 means no limit,
+-- which is what a server with no round loop wants -- and this engine has no
+-- round loop yet, so 0 is the default rather than CS's 20.
+Define("mp_buytime", 0, FCVAR.REPLICATED)
+
+-- Whether you have to stand in a buy zone. A map with no zones in it lets
+-- you buy anywhere whatever this says: refusing every purchase on a map that
+-- was never built for them is a feature nobody can use and cannot diagnose.
+Define("mp_buy_anywhere", false, FCVAR.REPLICATED)
+
+-- Seconds you may hand something back for a full refund, as long as you have
+-- not fired it and have not left the buy zone. 0 disables refunds.
+Define("mp_refundtime", 8, FCVAR.REPLICATED)
+
+Define("mp_buyfeedback", true, FCVAR.REPLICATED)  -- say why a purchase was refused
+  -- rounds only end on the clock
 Define("mp_death_drop_time", 0, FCVAR.REPLICATED)              -- corpse lingers before cleanup
 
 Define("mp_warmuptime", 15, FCVAR.REPLICATED)        -- grace period AFTER enough players join

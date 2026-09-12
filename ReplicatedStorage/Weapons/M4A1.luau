@@ -8,6 +8,12 @@ return {
 	-- a slot this forbids, so a pistol can never end up in the rifle slot.
 	slot = "primary",
 
+	-- WHAT IT COSTS in the buy menu, beside everything else about it: a
+	-- second table somewhere keyed by class name is a second thing to
+	-- keep in step. See ReplicatedStorage.Economy.
+	-- Four hundred more than the AK, for the quieter recoil.
+	price = 3100,
+
 	-- Movement speed while this is the ACTIVE weapon, in studs/second.
 	-- CS:GO's MaxPlayerSpeed of 225 units -- rifle.
 	-- Applied as a ratio of sv_maxspeed, so crouch and walk-key speeds

@@ -19,6 +19,12 @@ return {
 	-- a slot this forbids, so a pistol can never end up in the rifle slot.
 	slot = "secondary",
 
+	-- WHAT IT COSTS in the buy menu, beside everything else about it: a
+	-- second table somewhere keyed by class name is a second thing to
+	-- keep in step. See ReplicatedStorage.Economy.
+	-- The other starting pistol.
+	price = 200,
+
 	-- Movement speed while this is the ACTIVE weapon, in studs/second.
 	-- CS:GO's MaxPlayerSpeed of 240 units -- pistol.
 	-- Applied as a ratio of sv_maxspeed, so crouch and walk-key speeds

@@ -509,6 +509,18 @@ local function updatePlayerPanel()
 			.. paint(("%3d"):format(math.floor(armor)), armor > 0 and PALETTE.armor or PALETTE.dim)
 			.. paint("  " .. bar(armorFrac, 20), armor > 0 and PALETTE.armor or PALETTE.dim)
 			.. (helmet and paint("  HELMET", PALETTE.armor) or ""))
+
+		-- WHAT YOU CAN AFFORD. Money is an attribute on the Player rather
+		-- than the puppet -- it has to survive the body being rebuilt -- so
+		-- it is read from there and not from the block above.
+		local money = plr:GetAttribute("Money")
+		if money then
+			table.insert(lines, paint("money ", PALETTE.dim)
+				.. paint(("$%d"):format(math.floor(money)),
+					money > 0 and PALETTE.good or PALETTE.dim)
+				.. (plr:GetAttribute("Defuser")
+					and paint("   KIT", PALETTE.cool) or ""))
+		end
 	else
 		table.insert(lines, paint("no puppet -- unloaded or spectating", PALETTE.dim))
 	end
