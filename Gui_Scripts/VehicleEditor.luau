@@ -30,19 +30,22 @@ local VehicleDefs = require(ReplicatedStorage:WaitForChild("VehicleDefs"))
 
 local plr = Players.LocalPlayer
 
-local function findClientModules()
-	local candidates = {
-		plr:FindFirstChild("PlayerScripts"),
-		ReplicatedStorage,
-		plr:FindFirstChild("PlayerGui"),
-	}
-	for _, parent in ipairs(candidates) do
-		if parent then
-			local folder = parent:FindFirstChild("Player")
-			if folder and folder:FindFirstChild("Input") then return folder end
-		end
-	end
+-- NOT a list walked with ipairs, which is what this was: the first candidate
+-- is a FindFirstChild that can come back nil, and a table constructor with nil
+-- in slot one has length zero -- so the loop looked at NOTHING and the answer
+-- was always "no modules anywhere". It only ever worked because PlayerScripts
+-- happens to exist on a real client.
+local function modulesIn(parent)
+	if not parent then return nil end
+	local folder = parent:FindFirstChild("Player")
+	if folder and folder:FindFirstChild("Input") then return folder end
 	return nil
+end
+
+local function findClientModules()
+	return modulesIn(plr:FindFirstChild("PlayerScripts"))
+		or modulesIn(ReplicatedStorage)
+		or modulesIn(plr:FindFirstChild("PlayerGui"))
 end
 
 local ClientModules = findClientModules()
