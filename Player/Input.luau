@@ -196,6 +196,11 @@ local COMMANDS = {
 	-- Only the keys the car actually wants are in the set. Everything else --
 	-- the console, the menu, third person -- falls through to the on-foot
 	-- binds, so driving does not cost you the rest of the keyboard.
+	-- The buy menu. Passthrough for the same reason the console and the menu
+	-- are: it makes the game modal, so without it the key that opened it
+	-- could not close it.
+	["buymenu"] = { order = 19.5, label = "Buy Menu", button = false, modalPassthrough = true },
+
 	["+vthrottle"] = { order = 22, label = "Accelerate", button = true, set = "vehicle" },
 	["+vbrake"]    = { order = 23, label = "Brake / Reverse", button = true, set = "vehicle" },
 	["+vleft"]     = { order = 24, label = "Steer Left",  button = true, set = "vehicle" },
@@ -233,6 +238,7 @@ local DEFAULT_BINDS = {
 	{ "`", "toggleconsole" }, { "f3", "toggleconsole" },
 	{ "v", "thirdperson" }, { "f", "+lookatweapon" },
 	{ "e", "+use" }, { "g", "drop" },
+	{ "b", "buymenu" },
 	{ "f1", "togglemenu" },
 
 	-- THE SAME KEYS AS WALKING, on purpose. Nothing about how a car drives
